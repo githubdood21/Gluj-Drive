@@ -59,7 +59,7 @@ type SemanticStatus = {
   enabled: boolean
   runtimeAvailable: boolean
   modelInstalled: boolean
-  modelDownloadAvailable: boolean
+  modelInstallAvailable: boolean
   modelId: string
   modelVersion: string | null
   computeSelection: string
@@ -71,9 +71,10 @@ type SemanticStatus = {
   failed: number
   remaining: number
   coveragePercent: number
-  downloadState: string
-  downloadProgressPercent: number
-  downloadError: string | null
+  installState: string
+  installPhase: string
+  installProgressPercent: number
+  installError: string | null
   job: SemanticJobStatus
 }
 
@@ -1176,17 +1177,17 @@ function App() {
                 <span style={{ width: `${Math.min(100, semanticStatus.coveragePercent)}%` }} />
               </div>
 
-              {semanticStatus.downloadState === 'downloading' && (
+              {semanticStatus.installState === 'installing' && (
                 <div className="ai-active-progress">
-                  <div><span>Downloading model</span><strong>{Math.round(semanticStatus.downloadProgressPercent)}%</strong></div>
+                  <div><span>{semanticStatus.installPhase}</span><strong>{Math.round(semanticStatus.installProgressPercent)}%</strong></div>
                   <div
                     className="ai-progress"
                     role="progressbar"
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-valuenow={Math.round(semanticStatus.downloadProgressPercent)}
+                    aria-valuenow={Math.round(semanticStatus.installProgressPercent)}
                   >
-                    <span style={{ width: `${Math.min(100, semanticStatus.downloadProgressPercent)}%` }} />
+                    <span style={{ width: `${Math.min(100, semanticStatus.installProgressPercent)}%` }} />
                   </div>
                 </div>
               )}
@@ -1231,17 +1232,19 @@ function App() {
                   </select>
                 </label>
 
-                {!semanticStatus.modelInstalled && (
+                {(!semanticStatus.modelInstalled || !semanticStatus.runtimeAvailable) && (
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={isAiActionPending || !semanticStatus.modelDownloadAvailable || semanticStatus.downloadState === 'downloading'}
-                    onClick={() => void runAiAction('/api/ai/model/download', { method: 'POST' })}
-                    title={semanticStatus.modelDownloadAvailable ? undefined : 'Configure a verified model package URL on the server first.'}
+                    disabled={isAiActionPending || !semanticStatus.modelInstallAvailable || semanticStatus.installState === 'installing'}
+                    onClick={() => void runAiAction('/api/ai/install', { method: 'POST' })}
+                    title={semanticStatus.modelInstallAvailable ? undefined : 'This build does not include an AI package and has no release download configured.'}
                   >
-                    {semanticStatus.downloadState === 'downloading'
-                      ? `Downloading ${Math.round(semanticStatus.downloadProgressPercent)}%`
-                      : 'Download model'}
+                    {semanticStatus.installState === 'installing'
+                      ? 'Installing...'
+                      : semanticStatus.modelInstalled
+                        ? 'Repair AI search'
+                        : 'Install AI search'}
                   </button>
                 )}
 
@@ -1286,8 +1289,8 @@ function App() {
                     {semanticStatus.job.estimatedSecondsRemaining !== null ? ` · about ${semanticStatus.job.estimatedSecondsRemaining}s left` : ''}
                   </span>
                 )}
-                {(semanticStatus.fallbackReason || semanticStatus.downloadError || semanticStatus.job.error) && (
-                  <span className="ai-warning">{semanticStatus.fallbackReason ?? semanticStatus.downloadError ?? semanticStatus.job.error}</span>
+                {(semanticStatus.fallbackReason || semanticStatus.installError || semanticStatus.job.error) && (
+                  <span className="ai-warning">{semanticStatus.fallbackReason ?? semanticStatus.installError ?? semanticStatus.job.error}</span>
                 )}
               </div>
             </>

@@ -94,7 +94,9 @@ Swagger is disabled outside Development so the interactive API surface is not ex
 
 Semantic image search is opt-in. The server does not load a model or inspect image pixels until the host explicitly starts **Analyze library**. Embeddings are stored in `data/catalog/semantic/semantic.db`; the USearch HNSW file is a rebuildable cache.
 
-To publish a verified TinyCLIP package, build the native runtime described in [`native/GlujDrive.Inference.Native/README.md`](native/GlujDrive.Inference.Native/README.md), host the converted model ZIP, and set:
+Published builds can include a verified combined AI package. A non-technical user only needs to open the host-only **AI search** panel and click **Install AI search**. The browser queues a background server worker which copies or downloads the package, verifies its archive and per-file SHA-256 hashes, extracts the TinyCLIP model and Windows native runtime, activates them atomically, and reports each phase in the UI. It does not require administrator access or development tools.
+
+To publish a verified TinyCLIP package, build the native runtime described in [`native/GlujDrive.Inference.Native/README.md`](native/GlujDrive.Inference.Native/README.md), then run `tools/semantic/package-ai-release.ps1`. Its default output is copied into published builds automatically. A smaller build may omit the bundled ZIP and use a release download instead:
 
 ```json
 "SemanticSearch": {
@@ -103,4 +105,4 @@ To publish a verified TinyCLIP package, build the native runtime described in [`
 }
 ```
 
-Until both a valid package URL and hash are configured, the download control stays disabled and ordinary filename/path search continues to work.
+The installer prefers the bundled package and falls back to the configured download. If neither is available, the install control explains that the build has no AI package; ordinary filename/path search continues to work.

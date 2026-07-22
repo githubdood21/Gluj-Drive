@@ -22,3 +22,8 @@ Thumbs.db
 data/
 logs/
 uploads/
+conversion/
+
+# Generated AI release artifacts (upload to GitHub Releases, not Git)
+src/GlujDrive.Server/ai/*.zip
+src/GlujDrive.Server/ai/*.zip.sha256

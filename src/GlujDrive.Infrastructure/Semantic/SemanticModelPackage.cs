@@ -25,7 +25,13 @@ internal sealed class SemanticModelPackage
         _modelPath = Path.Combine(dataPath, "model");
     }
 
-    public bool CanDownload =>
+    public bool CanInstall => HasBundledPackage || HasRemotePackage;
+
+    private bool HasBundledPackage =>
+        File.Exists(_options.BundledPackagePath) &&
+        File.Exists(_options.BundledPackageSha256Path);
+
+    private bool HasRemotePackage =>
         Uri.TryCreate(_options.ModelPackageUrl, UriKind.Absolute, out _) &&
         !string.IsNullOrWhiteSpace(_options.ModelPackageSha256);
 
@@ -50,6 +56,17 @@ internal sealed class SemanticModelPackage
             }
 
             _cachedManifest = await ValidateDirectoryAsync(_modelPath, cancellationToken);
+            if (_cachedManifest is not null)
+            {
+                try
+                {
+                    EnsureRuntimeIsPackaged(_modelPath, _cachedManifest);
+                }
+                catch (InvalidDataException)
+                {
+                    _cachedManifest = null;
+                }
+            }
             return _cachedManifest;
         }
         finally
@@ -58,14 +75,14 @@ internal sealed class SemanticModelPackage
         }
     }
 
-    public async Task DownloadAsync(
-        IProgress<double> progress,
+    public async Task InstallAsync(
+        IProgress<SemanticInstallProgress> progress,
         CancellationToken cancellationToken = default)
     {
-        if (!CanDownload)
+        if (!CanInstall)
         {
             throw new InvalidOperationException(
-                "No semantic model package URL and SHA-256 have been configured.");
+                "This build has no bundled AI package and no release download is configured.");
         }
 
         await _gate.WaitAsync(cancellationToken);
@@ -78,43 +95,55 @@ internal sealed class SemanticModelPackage
         try
         {
             Directory.CreateDirectory(workPath);
-            using var response = await _httpClient.GetAsync(
-                _options.ModelPackageUrl,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
-            response.EnsureSuccessStatusCode();
-            var totalBytes = response.Content.Headers.ContentLength;
-            await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
-            await using (var output = new FileStream(
-                             archivePath,
-                             FileMode.CreateNew,
-                             FileAccess.Write,
-                             FileShare.None,
-                             128 * 1024,
-                             FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                var buffer = new byte[128 * 1024];
-                long copied = 0;
-                int read;
+            string expectedArchiveHash;
 
-                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
-                {
-                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                    copied += read;
-                    progress.Report(totalBytes is > 0 ? copied * 100d / totalBytes.Value : 0d);
-                }
+            if (HasBundledPackage)
+            {
+                progress.Report(new SemanticInstallProgress("Preparing bundled package", 0));
+                expectedArchiveHash = ParseSha256File(
+                    await File.ReadAllTextAsync(
+                        _options.BundledPackageSha256Path,
+                        cancellationToken));
+                await CopyWithProgressAsync(
+                    _options.BundledPackagePath,
+                    archivePath,
+                    progress,
+                    "Preparing bundled package",
+                    cancellationToken);
+            }
+            else
+            {
+                progress.Report(new SemanticInstallProgress("Downloading package", 0));
+                expectedArchiveHash = _options.ModelPackageSha256!;
+                using var response = await _httpClient.GetAsync(
+                    _options.ModelPackageUrl,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
+                response.EnsureSuccessStatusCode();
+                await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await CopyWithProgressAsync(
+                    input,
+                    archivePath,
+                    response.Content.Headers.ContentLength,
+                    progress,
+                    "Downloading package",
+                    cancellationToken);
             }
 
+            progress.Report(new SemanticInstallProgress("Verifying package", 78));
             await VerifyFileHashAsync(
                 archivePath,
-                _options.ModelPackageSha256!,
+                expectedArchiveHash,
                 cancellationToken);
             Directory.CreateDirectory(extractedPath);
+            progress.Report(new SemanticInstallProgress("Extracting package", 84));
             ExtractSafely(archivePath, extractedPath);
 
             var packageRoot = ResolvePackageRoot(extractedPath);
-            _ = await ValidateDirectoryAsync(packageRoot, cancellationToken) ??
-                throw new InvalidDataException("The downloaded model package is invalid.");
+            progress.Report(new SemanticInstallProgress("Validating model and runtime", 90));
+            var candidateManifest = await ValidateDirectoryAsync(packageRoot, cancellationToken) ??
+                                    throw new InvalidDataException("The downloaded model package is invalid.");
+            EnsureRuntimeIsPackaged(packageRoot, candidateManifest);
 
             var backupPath = $"{_modelPath}.previous";
             if (Directory.Exists(backupPath))
@@ -129,6 +158,7 @@ internal sealed class SemanticModelPackage
 
             try
             {
+                progress.Report(new SemanticInstallProgress("Activating installation", 96));
                 Directory.Move(packageRoot, _modelPath);
                 if (Directory.Exists(backupPath))
                 {
@@ -151,7 +181,8 @@ internal sealed class SemanticModelPackage
             }
 
             _cachedManifest = await ValidateDirectoryAsync(_modelPath, cancellationToken);
-            progress.Report(100d);
+            EnsureRuntimeIsPackaged(_modelPath, _cachedManifest);
+            progress.Report(new SemanticInstallProgress("Installed", 100d));
         }
         finally
         {
@@ -161,6 +192,92 @@ internal sealed class SemanticModelPackage
             {
                 Directory.Delete(workPath, recursive: true);
             }
+        }
+    }
+
+    private void EnsureRuntimeIsPackaged(
+        string packagePath,
+        SemanticModelManifest? manifest)
+    {
+        if (manifest is null || Path.IsPathRooted(_options.RuntimeLibraryPath))
+        {
+            return;
+        }
+
+        var runtimePath = ResolveContainedPath(packagePath, _options.RuntimeLibraryPath);
+        var normalizedRuntimePath = _options.RuntimeLibraryPath
+            .Replace('\\', '/')
+            .TrimStart('/');
+        var runtimeIsHashed = manifest.Files.Keys.Any(path =>
+            path.Replace('\\', '/').TrimStart('/')
+                .Equals(normalizedRuntimePath, StringComparison.OrdinalIgnoreCase));
+
+        if (!File.Exists(runtimePath) || !runtimeIsHashed)
+        {
+            throw new InvalidDataException(
+                "The AI package does not contain a hash-verified Windows native runtime.");
+        }
+    }
+
+    private static string ParseSha256File(string content)
+    {
+        var hash = content
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        return hash is { Length: 64 } && hash.All(Uri.IsHexDigit)
+            ? hash
+            : throw new InvalidDataException("The bundled AI package SHA-256 file is invalid.");
+    }
+
+    private static async Task CopyWithProgressAsync(
+        string sourcePath,
+        string destinationPath,
+        IProgress<SemanticInstallProgress> progress,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        await using var source = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await CopyWithProgressAsync(
+            source,
+            destinationPath,
+            source.Length,
+            progress,
+            phase,
+            cancellationToken);
+    }
+
+    private static async Task CopyWithProgressAsync(
+        Stream source,
+        string destinationPath,
+        long? totalBytes,
+        IProgress<SemanticInstallProgress> progress,
+        string phase,
+        CancellationToken cancellationToken)
+    {
+        await using var output = new FileStream(
+            destinationPath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            128 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var buffer = new byte[128 * 1024];
+        long copied = 0;
+        int read;
+
+        while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            copied += read;
+            progress.Report(new SemanticInstallProgress(
+                phase,
+                totalBytes is > 0 ? copied * 75d / totalBytes.Value : 0d));
         }
     }
 
@@ -281,3 +398,5 @@ internal sealed class SemanticModelPackage
         }
     }
 }
+
+internal sealed record SemanticInstallProgress(string Phase, double Percent);

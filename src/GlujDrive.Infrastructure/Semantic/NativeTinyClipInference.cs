@@ -245,7 +245,12 @@ internal sealed class NativeTinyClipInference : IDisposable
 
         var runtimePath = Path.IsPathRooted(_options.RuntimeLibraryPath)
             ? _options.RuntimeLibraryPath
-            : Path.Combine(AppContext.BaseDirectory, _options.RuntimeLibraryPath);
+            : Path.Combine(_modelPackage.ModelPath, _options.RuntimeLibraryPath);
+
+        if (!File.Exists(runtimePath) && !Path.IsPathRooted(_options.RuntimeLibraryPath))
+        {
+            runtimePath = Path.Combine(AppContext.BaseDirectory, _options.RuntimeLibraryPath);
+        }
         _api = new NativeApi(runtimePath);
 
         if (_api.ApiVersion() != ExpectedApiVersion)

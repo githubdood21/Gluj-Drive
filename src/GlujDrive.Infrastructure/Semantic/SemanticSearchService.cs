@@ -24,9 +24,10 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
     private readonly ILogger<SemanticSearchService> _logger;
     private CancellationTokenSource? _analysisCancellation;
     private SemanticJobStatus _job = EmptyJob("idle");
-    private string _downloadState = "idle";
-    private double _downloadProgress;
-    private string? _downloadError;
+    private string _installState = "idle";
+    private string _installPhase = "Not installed";
+    private double _installProgress;
+    private string? _installError;
     private int _lastEligible;
     private DateTimeOffset _lastEligibleRefreshUtc = DateTimeOffset.MinValue;
     private bool _disposed;
@@ -75,19 +76,29 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
     public async Task<SemanticStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
         var manifest = await _modelPackage.GetInstalledManifestAsync(cancellationToken: cancellationToken);
+        var runtimeAvailable = _inference.RuntimeAvailable;
         var compute = await GetComputeSelectionAsync(cancellationToken);
         var records = await _catalog.ListAsync(cancellationToken);
         SemanticJobStatus job;
-        string downloadState;
-        double downloadProgress;
-        string? downloadError;
+        string installState;
+        string installPhase;
+        double installProgress;
+        string? installError;
 
         lock (_stateGate)
         {
             job = _job;
-            downloadState = _downloadState;
-            downloadProgress = _downloadProgress;
-            downloadError = _downloadError;
+            installState = _installState;
+            installPhase = _installPhase;
+            installProgress = _installProgress;
+            installError = _installError;
+        }
+
+        if (installState == "idle" && manifest is not null && runtimeAvailable)
+        {
+            installState = "installed";
+            installPhase = "Ready";
+            installProgress = 100;
         }
 
         if (job.State is not "running" &&
@@ -109,9 +120,9 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
 
         return new SemanticStatus(
             _options.Enabled,
-            _inference.RuntimeAvailable,
+            runtimeAvailable,
             manifest is not null,
-            _modelPackage.CanDownload,
+            _modelPackage.CanInstall,
             manifest?.ModelId ?? DefaultModelId,
             manifest?.Version,
             compute,
@@ -123,9 +134,10 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
             failed,
             remaining,
             coverage,
-            downloadState,
-            downloadProgress,
-            downloadError,
+            installState,
+            installPhase,
+            installProgress,
+            installError,
             job);
     }
 
@@ -133,27 +145,28 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         CancellationToken cancellationToken = default) =>
         _inference.GetDevicesAsync(cancellationToken);
 
-    public Task StartModelDownloadAsync(CancellationToken cancellationToken = default)
+    public Task StartInstallationAsync(CancellationToken cancellationToken = default)
     {
-        if (!_modelPackage.CanDownload)
+        if (!_modelPackage.CanInstall)
         {
             throw new InvalidOperationException(
-                "Configure a semantic model package URL and SHA-256 before downloading.");
+                "This build has no bundled AI package and no release download is configured.");
         }
 
         lock (_stateGate)
         {
-            if (_downloadState == "downloading")
+            if (_installState == "installing")
             {
-                throw new InvalidOperationException("The semantic model is already downloading.");
+                throw new InvalidOperationException("AI search is already being installed.");
             }
 
-            _downloadState = "downloading";
-            _downloadProgress = 0;
-            _downloadError = null;
+            _installState = "installing";
+            _installPhase = "Queued";
+            _installProgress = 0;
+            _installError = null;
         }
 
-        _ = Task.Run(DownloadModelAsync, CancellationToken.None);
+        _ = Task.Run(InstallAiAsync, CancellationToken.None);
         return Task.CompletedTask;
     }
 
@@ -353,33 +366,42 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         _vectorIndex.Dispose();
     }
 
-    private async Task DownloadModelAsync()
+    private async Task InstallAiAsync()
     {
         try
         {
-            var progress = new Progress<double>(value =>
+            var progress = new Progress<SemanticInstallProgress>(value =>
             {
                 lock (_stateGate)
                 {
-                    _downloadProgress = value;
+                    _installPhase = value.Phase;
+                    _installProgress = value.Percent;
                 }
             });
-            await _modelPackage.DownloadAsync(progress, CancellationToken.None);
+            await _modelPackage.InstallAsync(progress, CancellationToken.None);
             await _inference.ResetAsync();
+
+            if (!_inference.RuntimeAvailable)
+            {
+                throw new InvalidOperationException(
+                    "The package was installed, but the Windows native runtime could not be loaded.");
+            }
 
             lock (_stateGate)
             {
-                _downloadState = "installed";
-                _downloadProgress = 100;
+                _installState = "installed";
+                _installPhase = "Ready";
+                _installProgress = 100;
             }
         }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "The semantic model download failed.");
+            _logger.LogError(exception, "AI search installation failed.");
             lock (_stateGate)
             {
-                _downloadState = "failed";
-                _downloadError = exception.Message;
+                _installState = "failed";
+                _installPhase = "Installation failed";
+                _installError = exception.Message;
             }
         }
     }

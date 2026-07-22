@@ -27,7 +27,7 @@ public sealed record SemanticStatus(
     bool Enabled,
     bool RuntimeAvailable,
     bool ModelInstalled,
-    bool ModelDownloadAvailable,
+    bool ModelInstallAvailable,
     string ModelId,
     string? ModelVersion,
     string ComputeSelection,
@@ -39,9 +39,10 @@ public sealed record SemanticStatus(
     int Failed,
     int Remaining,
     double CoveragePercent,
-    string DownloadState,
-    double DownloadProgressPercent,
-    string? DownloadError,
+    string InstallState,
+    string InstallPhase,
+    double InstallProgressPercent,
+    string? InstallError,
     SemanticJobStatus Job);
 
 public sealed record SemanticMatch(Guid AssetId, double Score);
@@ -59,7 +60,7 @@ public interface ISemanticSearchService
     Task<IReadOnlyList<SemanticDevice>> GetDevicesAsync(
         CancellationToken cancellationToken = default);
 
-    Task StartModelDownloadAsync(CancellationToken cancellationToken = default);
+    Task StartInstallationAsync(CancellationToken cancellationToken = default);
 
     Task SetComputeSelectionAsync(
         string selection,

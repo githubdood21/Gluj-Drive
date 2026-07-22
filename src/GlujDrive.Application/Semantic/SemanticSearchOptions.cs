@@ -8,7 +8,13 @@ public sealed class SemanticSearchOptions
 
     public string DataPath { get; set; } = "data/catalog/semantic";
 
-    public string RuntimeLibraryPath { get; set; } = "GlujDrive.Inference.Native.dll";
+    public string RuntimeLibraryPath { get; set; } =
+        "runtime/win-x64/GlujDrive.Inference.Native.dll";
+
+    public string BundledPackagePath { get; set; } = "ai/TinyCLIP-ncnn-win-x64.zip";
+
+    public string BundledPackageSha256Path { get; set; } =
+        "ai/TinyCLIP-ncnn-win-x64.zip.sha256";
 
     public string? ModelPackageUrl { get; set; }
 

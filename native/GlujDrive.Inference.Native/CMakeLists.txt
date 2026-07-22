@@ -16,7 +16,7 @@ target_link_libraries(GlujDrive.Inference.Native PRIVATE ncnn)
 target_compile_definitions(GlujDrive.Inference.Native PRIVATE GD_NCNN_RUNTIME=1)
 
 if(MSVC)
-    target_compile_options(GlujDrive.Inference.Native PRIVATE /W4 /permissive-)
+    target_compile_options(GlujDrive.Inference.Native PRIVATE /W4 /permissive- /EHsc)
 else()
     target_compile_options(GlujDrive.Inference.Native PRIVATE -Wall -Wextra -Wpedantic)
 endif()

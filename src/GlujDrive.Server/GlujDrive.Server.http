@@ -8,6 +8,9 @@ Accept: application/json
 GET {{GlujDrive.Server_HostAddress}}/api/ai/status
 Accept: application/json
 
+### Queue the bundled/downloaded AI installation (host only)
+POST {{GlujDrive.Server_HostAddress}}/api/ai/install
+
 ### Hybrid filename and semantic search
 POST {{GlujDrive.Server_HostAddress}}/api/search
 Content-Type: application/json

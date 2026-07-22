@@ -30,7 +30,9 @@ int fail(std::string message) {
 }
 
 std::filesystem::path model_file(const char* root, const char* name) {
-    return std::filesystem::u8path(root) / name;
+    const auto* first = reinterpret_cast<const char8_t*>(root);
+    const auto* last = first + std::strlen(root);
+    return std::filesystem::path(std::u8string(first, last)) / name;
 }
 
 bool normalize(float* values, int count) {
@@ -54,8 +56,16 @@ int run_text(context_state& state, const int* tokens, int token_count, float* ou
     if (extractor.input("tokens", token_tensor) != 0) return fail("The text model has no 'tokens' input.");
     ncnn::Mat embedding;
     if (extractor.extract("embedding", embedding) != 0) return fail("Text inference failed.");
-    if (embedding.total() != static_cast<size_t>(dimensions)) return fail("Text embedding dimensions do not match the manifest.");
-    std::memcpy(output, embedding.data, static_cast<size_t>(dimensions) * sizeof(float));
+    if (embedding.total() != static_cast<size_t>(token_count) * dimensions) {
+        return fail("Text embedding dimensions do not match the manifest.");
+    }
+    int end_position = 0;
+    for (int index = 1; index < token_count; ++index) {
+        if (tokens[index] > tokens[end_position]) end_position = index;
+    }
+    const auto* position = static_cast<const float*>(embedding.data) +
+                           static_cast<size_t>(end_position) * dimensions;
+    std::memcpy(output, position, static_cast<size_t>(dimensions) * sizeof(float));
     return normalize(output, dimensions) ? 0 : fail("Text inference returned an empty vector.");
 }
 } // namespace

@@ -46,6 +46,12 @@ var semanticOptions = builder.Configuration
 var semanticDataPath = Path.GetFullPath(
     semanticOptions.DataPath,
     builder.Environment.ContentRootPath);
+semanticOptions.BundledPackagePath = Path.GetFullPath(
+    semanticOptions.BundledPackagePath,
+    builder.Environment.ContentRootPath);
+semanticOptions.BundledPackageSha256Path = Path.GetFullPath(
+    semanticOptions.BundledPackageSha256Path,
+    builder.Environment.ContentRootPath);
 
 builder.Services.AddSingleton(storageOptions);
 builder.Services.AddSingleton<IAssetStorage>(new LocalAssetStorage(catalogPath, defaultFolderPath));

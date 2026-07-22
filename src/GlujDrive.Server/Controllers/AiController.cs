@@ -22,15 +22,16 @@ public sealed class AiController(ISemanticSearchService semanticSearch) : Contro
         CancellationToken cancellationToken) =>
         Ok(await semanticSearch.GetDevicesAsync(cancellationToken));
 
+    [HttpPost("install")]
     [HttpPost("model/download")]
     [HostOnly]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> DownloadModelAsync(CancellationToken cancellationToken)
+    public async Task<IActionResult> InstallAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await semanticSearch.StartModelDownloadAsync(cancellationToken);
+            await semanticSearch.StartInstallationAsync(cancellationToken);
             return Accepted();
         }
         catch (InvalidOperationException exception)
