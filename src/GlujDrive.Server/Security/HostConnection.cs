@@ -7,6 +7,13 @@ public static class HostConnection
     public static bool IsLocal(HttpContext context)
     {
         var remoteAddress = context.Connection.RemoteIpAddress;
-        return remoteAddress is not null && IPAddress.IsLoopback(remoteAddress);
+        if (remoteAddress is null || !IPAddress.IsLoopback(remoteAddress))
+        {
+            return false;
+        }
+
+        var host = context.Request.Host.Host;
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+               IPAddress.TryParse(host, out var hostAddress) && IPAddress.IsLoopback(hostAddress);
     }
 }

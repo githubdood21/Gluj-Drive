@@ -94,6 +94,18 @@ When the server runs in the Development environment, interactive API documentati
 
 Swagger is disabled outside Development so the interactive API surface is not exposed by a normal home-server deployment.
 
+## Root account and remote access
+
+On first launch, open Gluj Drive directly on the Windows host. The site requires creation of one root account before any remote client can access library APIs. Loopback requests from the host PC deliberately bypass sign-in so the owner cannot lock themselves out; host-only folder, AI, account, and server settings remain unavailable to remote clients even after they authenticate.
+
+Remote authentication uses an HTTP-only, SameSite `Strict` ASP.NET Core cookie. The default persistent session is 365 days and can be shortened from the host-only **Settings** panel. Cookie encryption keys are persisted beneath `data/catalog/auth/keys` and protected with Windows DPAPI, so sessions survive restarts but remain tied to the Windows account running Gluj Drive. Passwords are never stored directly: the account file contains a unique salt and a PBKDF2-HMAC-SHA256 hash using 600,000 iterations. Changing the root account rotates its security stamp and invalidates existing remote sessions.
+
+API requests carrying a foreign `Origin` are rejected instead of merely omitting CORS response headers. Unsafe remote requests without a browser origin are also rejected. This same-origin policy is intentionally stricter than ordinary CORS and still permits the loopback Vite development proxy. Authentication is rate-limited to five attempts per remote address per minute.
+
+HTTP authentication does not encrypt traffic. Configure HTTPS or use a trusted private VPN before signing in across an untrusted network; the remote login screen warns when its connection is not HTTPS.
+
+The host-only **Settings** panel manages session lifetime, upload limits, TinyCLIP similarity thresholds, semantic candidate limits, and root-account changes. These overrides are stored in `data/catalog/server-settings.json`. Increased upload limits require a server restart because Kestrel's request-body ceiling is established during startup; other exposed settings apply immediately.
+
 ## Optional semantic search
 
 Semantic image search is opt-in. The server does not load a model or inspect image pixels until the host explicitly starts **Analyze library**. Embeddings are stored in `data/catalog/semantic/semantic.db`; the USearch HNSW file is a rebuildable cache.

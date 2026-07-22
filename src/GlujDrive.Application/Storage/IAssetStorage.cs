@@ -17,6 +17,12 @@ public interface IAssetStorage
         Guid folderId,
         CancellationToken cancellationToken = default);
 
+    Task<bool?> SetSubfolderExcludedAsync(
+        Guid folderId,
+        string relativePath,
+        bool excluded,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<AssetFile>> ListAsync(
         CancellationToken cancellationToken = default);
 

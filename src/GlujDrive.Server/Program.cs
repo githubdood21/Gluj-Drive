@@ -2,7 +2,12 @@ using GlujDrive.Application.Storage;
 using GlujDrive.Application.Semantic;
 using GlujDrive.Infrastructure.Semantic;
 using GlujDrive.Infrastructure.Storage;
+using GlujDrive.Server.Security;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,13 +32,6 @@ if (string.IsNullOrWhiteSpace(storageOptions.DefaultFolderPath))
     throw new InvalidOperationException("Storage:DefaultFolderPath must not be empty.");
 }
 
-if (storageOptions.MaxUploadBytes <= 0 ||
-    storageOptions.MaxBatchUploadBytes < storageOptions.MaxUploadBytes)
-{
-    throw new InvalidOperationException(
-        "Upload limits are invalid; the batch limit must be at least the per-file limit.");
-}
-
 var catalogPath = Path.GetFullPath(
     storageOptions.CatalogPath,
     builder.Environment.ContentRootPath);
@@ -46,6 +44,17 @@ var semanticOptions = builder.Configuration
 var semanticDataPath = Path.GetFullPath(
     semanticOptions.DataPath,
     builder.Environment.ContentRootPath);
+var serverSettings = new ServerSettingsStore(catalogPath, storageOptions, semanticOptions);
+var rootAccounts = new RootAccountStore(catalogPath);
+var dataProtectionPath = Path.Combine(catalogPath, "auth", "keys");
+Directory.CreateDirectory(dataProtectionPath);
+
+if (storageOptions.MaxUploadBytes <= 0 ||
+    storageOptions.MaxBatchUploadBytes < storageOptions.MaxUploadBytes)
+{
+    throw new InvalidOperationException(
+        "Upload limits are invalid; the batch limit must be at least the per-file limit.");
+}
 var configuredFfmpegPath = builder.Configuration["Media:FfmpegPath"] ??
     "runtime/ffmpeg/win-x64/ffmpeg.exe";
 var ffmpegPath = Path.IsPathRooted(configuredFfmpegPath)
@@ -65,6 +74,8 @@ semanticOptions.BundledPackageSha256Path = Path.GetFullPath(
     builder.Environment.ContentRootPath);
 
 builder.Services.AddSingleton(storageOptions);
+builder.Services.AddSingleton(serverSettings);
+builder.Services.AddSingleton(rootAccounts);
 builder.Services.AddSingleton<IAssetStorage>(new LocalAssetStorage(catalogPath, defaultFolderPath));
 builder.Services.AddSingleton<IAssetVisualService>(services =>
     new CachedAssetVisualService(
@@ -82,6 +93,54 @@ builder.Services.AddSingleton<ISemanticSearchService>(services =>
         semanticDataPath,
         services.GetRequiredService<ILogger<SemanticSearchService>>()));
 builder.Services.AddControllers();
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath))
+    .ProtectKeysWithDpapi()
+    .SetApplicationName("GlujDrive");
+builder.Services
+    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = "GlujDrive.Root";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.Cookie.IsEssential = true;
+        options.ExpireTimeSpan = TimeSpan.FromDays(365);
+        options.SlidingExpiration = true;
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var accountStore = context.HttpContext.RequestServices.GetRequiredService<RootAccountStore>();
+            if (!accountStore.HasCurrentSecurityStamp(context.Principal?.FindFirst("security_stamp")?.Value))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            }
+        };
+    });
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("login", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.Configure<FormOptions>(options =>
@@ -131,6 +190,11 @@ app.Use((context, next) =>
     context.Response.Headers.XContentTypeOptions = "nosniff";
     return next(context);
 });
+
+app.UseRouting();
+app.UseAuthentication();
+app.UseRateLimiter();
+app.UseMiddleware<RequestSecurityMiddleware>();
 
 app.MapControllers();
 

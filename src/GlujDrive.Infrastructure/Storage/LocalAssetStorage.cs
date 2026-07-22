@@ -211,6 +211,73 @@ public sealed class LocalAssetStorage : IAssetStorage
         }
     }
 
+    public async Task<bool?> SetSubfolderExcludedAsync(
+        Guid folderId,
+        string relativePath,
+        bool excluded,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedRelativePath = NormalizeRelativeSubfolderPath(relativePath);
+        await _gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            var index = _folders.FindIndex(folder => folder.Id == folderId);
+            if (index < 0)
+            {
+                return null;
+            }
+
+            var folder = _folders[index];
+            var fullPath = Path.GetFullPath(Path.Combine(
+                folder.Path,
+                normalizedRelativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var verifiedRelativePath = Path.GetRelativePath(folder.Path, fullPath)
+                .Replace(Path.DirectorySeparatorChar, '/');
+
+            if (verifiedRelativePath.Equals("..", StringComparison.Ordinal) ||
+                verifiedRelativePath.StartsWith("../", StringComparison.Ordinal) ||
+                !Directory.Exists(fullPath))
+            {
+                throw new DirectoryNotFoundException(
+                    $"The subfolder '{normalizedRelativePath}' does not exist inside '{folder.Path}'.");
+            }
+
+            var exclusions = (folder.ExcludedRelativePaths ?? [])
+                .Select(NormalizeRelativeSubfolderPath)
+                .ToList();
+
+            if (excluded)
+            {
+                if (!exclusions.Any(path => PathEqualsOrContains(path, verifiedRelativePath)))
+                {
+                    exclusions.RemoveAll(path => PathEqualsOrContains(verifiedRelativePath, path));
+                    exclusions.Add(verifiedRelativePath);
+                }
+            }
+            else
+            {
+                exclusions.RemoveAll(path => path.Equals(
+                    verifiedRelativePath,
+                    StringComparison.OrdinalIgnoreCase));
+            }
+
+            _folders[index] = folder with
+            {
+                ExcludedRelativePaths = exclusions
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray()
+            };
+            await PersistFoldersAsync(cancellationToken);
+            _assetIndex = BuildAssetIndex(_folders, cancellationToken);
+            return excluded;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<AssetFile>> ListAsync(
         CancellationToken cancellationToken = default)
     {
@@ -511,6 +578,7 @@ public sealed class LocalAssetStorage : IAssetStorage
                 var relativePath = Path.GetRelativePath(folder.Path, filePath);
 
                 if (ContainsTrashDirectory(relativePath) ||
+                    IsExcluded(relativePath, folder.ExcludedRelativePaths) ||
                     !SupportedMediaTypes.TryGetContentType(filePath, out var contentType))
                 {
                     continue;
@@ -580,7 +648,11 @@ public sealed class LocalAssetStorage : IAssetStorage
                 .Select(folder => folder with
                 {
                     Path = NormalizeFolderPath(folder.Path),
-                    IsAvailable = Directory.Exists(folder.Path)
+                    IsAvailable = Directory.Exists(folder.Path),
+                    ExcludedRelativePaths = (folder.ExcludedRelativePaths ?? [])
+                        .Select(NormalizeRelativeSubfolderPath)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray()
                 })
                 .ToList();
         }
@@ -617,6 +689,33 @@ public sealed class LocalAssetStorage : IAssetStorage
         }
 
         File.Move(temporaryPath, _registryPath, overwrite: true);
+    }
+
+    private static bool IsExcluded(
+        string relativeFilePath,
+        IReadOnlyList<string>? excludedRelativePaths)
+    {
+        var normalized = relativeFilePath.Replace('\\', '/').Trim('/');
+        return (excludedRelativePaths ?? []).Any(excluded =>
+            PathEqualsOrContains(excluded, normalized));
+    }
+
+    private static bool PathEqualsOrContains(string parent, string candidate) =>
+        candidate.Equals(parent, StringComparison.OrdinalIgnoreCase) ||
+        candidate.StartsWith(parent.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeRelativeSubfolderPath(string relativePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        var normalized = relativePath.Replace('\\', '/').Trim('/');
+        if (Path.IsPathRooted(relativePath) ||
+            normalized.Split('/', StringSplitOptions.RemoveEmptyEntries)
+                .Any(part => part is "." or ".."))
+        {
+            throw new ArgumentException("A valid relative subfolder path is required.", nameof(relativePath));
+        }
+
+        return normalized;
     }
 
     private static string NormalizeClientFileName(string fileName)

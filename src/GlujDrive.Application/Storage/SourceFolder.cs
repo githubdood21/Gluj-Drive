@@ -6,4 +6,5 @@ public sealed record SourceFolder(
     string Path,
     bool IsDefault,
     bool IsAvailable,
-    DateTimeOffset AddedAtUtc);
+    DateTimeOffset AddedAtUtc,
+    IReadOnlyList<string>? ExcludedRelativePaths = null);

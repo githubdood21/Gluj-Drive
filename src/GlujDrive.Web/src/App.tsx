@@ -35,11 +35,30 @@ type SourceFolder = {
 type SourceSubfolder = {
   name: string
   relativePath: string
+  isExcluded: boolean
+  isDirectlyExcluded: boolean
 }
 
 type SystemCapabilities = {
   isHostConnection: boolean
   nativeFolderPicker: boolean
+}
+
+type AuthStatus = {
+  isHostConnection: boolean
+  setupRequired: boolean
+  isAuthenticated: boolean
+  isSecureConnection: boolean
+  username: string | null
+}
+
+type ServerSettings = {
+  sessionLifetimeDays: number
+  maxUploadBytes: number
+  maxBatchUploadBytes: number
+  minimumTextSimilarity: number
+  maximumTextSimilarityDrop: number
+  maximumSemanticCandidates: number
 }
 
 type SemanticJobStatus = {
@@ -596,7 +615,13 @@ function ImageViewer({
   )
 }
 
-function App() {
+function LibraryApp({
+  authStatus,
+  onAuthStatusChange,
+}: {
+  authStatus: AuthStatus
+  onAuthStatusChange: (status: AuthStatus) => void
+}) {
   const [assets, setAssets] = useState<Asset[]>([])
   const [folders, setFolders] = useState<SourceFolder[]>([])
   const [selectedFolderId, setSelectedFolderId] = useState('')
@@ -609,6 +634,13 @@ function App() {
   const [capabilities, setCapabilities] = useState<SystemCapabilities | null>(null)
   const [showFolderManager, setShowFolderManager] = useState(false)
   const [showAiManager, setShowAiManager] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [serverSettings, setServerSettings] = useState<ServerSettings | null>(null)
+  const [isSavingSettings, setIsSavingSettings] = useState(false)
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null)
+  const [accountName, setAccountName] = useState(authStatus.username ?? 'root')
+  const [newAccountPassword, setNewAccountPassword] = useState('')
+  const [confirmAccountPassword, setConfirmAccountPassword] = useState('')
   const [semanticStatus, setSemanticStatus] = useState<SemanticStatus | null>(null)
   const [semanticDevices, setSemanticDevices] = useState<SemanticDevice[]>([])
   const [isAiActionPending, setIsAiActionPending] = useState(false)
@@ -678,7 +710,8 @@ function App() {
           loadedFolders.find((folder) => folder.isDefault && folder.isAvailable) ??
           loadedFolders.find((folder) => folder.isAvailable)
         setSelectedUploadPath((currentPath) =>
-          nextFolder?.subfolders.some((subfolder) => subfolder.relativePath === currentPath)
+          nextFolder?.subfolders.some((subfolder) =>
+            subfolder.relativePath === currentPath && !subfolder.isExcluded)
             ? currentPath
             : '')
         return (
@@ -737,6 +770,78 @@ function App() {
       window.clearInterval(timer)
     }
   }, [capabilities?.isHostConnection, loadAiStatus, showAiManager])
+
+  useEffect(() => {
+    if (!showSettings || !capabilities?.isHostConnection) return
+    const controller = new AbortController()
+    void fetch('/api/settings', { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await getErrorMessage(response))
+        setServerSettings((await response.json()) as ServerSettings)
+      })
+      .catch((caughtError: unknown) => {
+        if (!(caughtError instanceof DOMException && caughtError.name === 'AbortError')) {
+          setError(caughtError instanceof Error ? caughtError.message : 'Could not load server settings.')
+        }
+      })
+    return () => controller.abort()
+  }, [capabilities?.isHostConnection, showSettings])
+
+  const saveServerSettings = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!serverSettings) return
+    setIsSavingSettings(true)
+    setSettingsNotice(null)
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(serverSettings),
+      })
+      if (!response.ok) throw new Error(await getErrorMessage(response))
+      const result = (await response.json()) as { settings: ServerSettings; restartRequired: boolean }
+      setServerSettings(result.settings)
+      setSettingsNotice(result.restartRequired
+        ? 'Saved. Restart the server before using the increased upload limit.'
+        : 'Server settings saved.')
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error ? caughtError.message : 'Could not save server settings.')
+    } finally {
+      setIsSavingSettings(false)
+    }
+  }
+
+  const updateRootAccount = async (event: FormEvent) => {
+    event.preventDefault()
+    if (newAccountPassword !== confirmAccountPassword) {
+      setError('The new passwords do not match.')
+      return
+    }
+    setIsSavingSettings(true)
+    setSettingsNotice(null)
+    try {
+      const response = await fetch('/api/auth/account', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: accountName, password: newAccountPassword }),
+      })
+      if (!response.ok) throw new Error(await getErrorMessage(response))
+      const status = (await response.json()) as AuthStatus
+      onAuthStatusChange(status)
+      setNewAccountPassword('')
+      setConfirmAccountPassword('')
+      setSettingsNotice('Root account updated. Existing remote sessions were signed out.')
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error ? caughtError.message : 'Could not update the root account.')
+    } finally {
+      setIsSavingSettings(false)
+    }
+  }
+
+  const logout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    onAuthStatusChange({ ...authStatus, isAuthenticated: false, username: null })
+  }
 
   const runAiAction = async (path: string, init?: RequestInit) => {
     setIsAiActionPending(true)
@@ -908,6 +1013,50 @@ function App() {
           ? caughtError.message
           : 'The default folder could not be changed.',
       )
+    } finally {
+      setIsUpdatingFolders(false)
+    }
+  }
+
+  const setSubfolderExcluded = async (
+    folder: SourceFolder,
+    subfolder: SourceSubfolder,
+  ) => {
+    const excluded = !subfolder.isDirectlyExcluded
+    setIsUpdatingFolders(true)
+    setError(null)
+
+    setFolders((current) => current.map((candidate) => candidate.id !== folder.id
+      ? candidate
+      : {
+          ...candidate,
+          subfolders: candidate.subfolders.map((item) => {
+            const isTargetOrDescendant = item.relativePath === subfolder.relativePath ||
+              item.relativePath.startsWith(subfolder.relativePath + '/')
+            return isTargetOrDescendant
+              ? {
+                  ...item,
+                  isExcluded: excluded,
+                  isDirectlyExcluded: item.relativePath === subfolder.relativePath && excluded,
+                }
+              : item
+          }),
+        }))
+
+    try {
+      const response = await fetch(`/api/folders/${folder.id}/subfolders/exclusion`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ relativePath: subfolder.relativePath, excluded }),
+      })
+
+      if (!response.ok) throw new Error(await getErrorMessage(response))
+      await loadLibrary()
+    } catch (caughtError: unknown) {
+      setError(caughtError instanceof Error
+        ? caughtError.message
+        : 'The subfolder scan setting could not be changed.')
+      await loadLibrary()
     } finally {
       setIsUpdatingFolders(false)
     }
@@ -1171,13 +1320,8 @@ function App() {
 
   const toggleSearchMediaKind = (kind: MediaKind) => {
     setSearchView((current) => current?.kind === 'similar' ? null : current)
-    setSearchMediaKinds((current) => {
-      if (current.length === ALL_MEDIA_KINDS.length) return [kind]
-      if (current.length === 1 && current[0] === kind) return ALL_MEDIA_KINDS
-      return current.includes(kind)
-        ? current.filter((value) => value !== kind)
-        : [...current, kind]
-    })
+    setSearchMediaKinds((current) =>
+      current.length === 1 && current[0] === kind ? ALL_MEDIA_KINDS : [kind])
   }
 
   const resetSearch = () => {
@@ -1211,10 +1355,27 @@ function App() {
             <button
               className="secondary-button"
               type="button"
+              onClick={() => setShowSettings((current) => !current)}
+              aria-expanded={showSettings}
+            >
+              Settings
+            </button>
+          )}
+
+          {capabilities?.isHostConnection && (
+            <button
+              className="secondary-button"
+              type="button"
               onClick={() => setShowAiManager((current) => !current)}
               aria-expanded={showAiManager}
             >
               AI search
+            </button>
+          )}
+
+          {!authStatus.isHostConnection && authStatus.isAuthenticated && (
+            <button className="secondary-button" type="button" onClick={() => void logout()}>
+              Sign out
             </button>
           )}
 
@@ -1239,6 +1400,126 @@ function App() {
           </button>
         </div>
       </header>
+
+      {showSettings && capabilities?.isHostConnection && (
+        <section className="settings-manager" aria-labelledby="settings-title">
+          <div className="settings-heading">
+            <div>
+              <p className="eyebrow">Host-only configuration</p>
+              <h2 id="settings-title">Server settings</h2>
+              <p>Manage remote access, uploads, and semantic matching without editing JSON files.</p>
+            </div>
+            {settingsNotice && <span className="settings-notice">{settingsNotice}</span>}
+          </div>
+
+          {!serverSettings ? (
+            <div className="ai-loading"><span className="loading-dot" /> Loading settings...</div>
+          ) : (
+            <div className="settings-grid">
+              <form className="settings-card" onSubmit={(event) => void saveServerSettings(event)}>
+                <h3>Server behavior</h3>
+                <p>Changes are stored in the application catalog and survive upgrades.</p>
+                <div className="settings-fields">
+                  <label>
+                    <span>Keep remote devices signed in</span>
+                    <div className="number-with-unit">
+                      <input
+                        type="number"
+                        min="1"
+                        max="365"
+                        value={serverSettings.sessionLifetimeDays}
+                        onChange={(event) => setServerSettings({ ...serverSettings, sessionLifetimeDays: Number(event.target.value) })}
+                      />
+                      <span>days</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>Maximum file upload</span>
+                    <div className="number-with-unit">
+                      <input
+                        type="number"
+                        min="1"
+                        value={Math.round(serverSettings.maxUploadBytes / 1024 / 1024)}
+                        onChange={(event) => setServerSettings({ ...serverSettings, maxUploadBytes: Number(event.target.value) * 1024 * 1024 })}
+                      />
+                      <span>MB</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>Maximum upload batch</span>
+                    <div className="number-with-unit">
+                      <input
+                        type="number"
+                        min="1"
+                        value={Math.round(serverSettings.maxBatchUploadBytes / 1024 / 1024)}
+                        onChange={(event) => setServerSettings({ ...serverSettings, maxBatchUploadBytes: Number(event.target.value) * 1024 * 1024 })}
+                      />
+                      <span>MB</span>
+                    </div>
+                  </label>
+                  <label>
+                    <span>Minimum TinyCLIP similarity</span>
+                    <input
+                      type="number"
+                      min="-1"
+                      max="1"
+                      step="0.01"
+                      value={serverSettings.minimumTextSimilarity}
+                      onChange={(event) => setServerSettings({ ...serverSettings, minimumTextSimilarity: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    <span>Maximum drop from best match</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="2"
+                      step="0.01"
+                      value={serverSettings.maximumTextSimilarityDrop}
+                      onChange={(event) => setServerSettings({ ...serverSettings, maximumTextSimilarityDrop: Number(event.target.value) })}
+                    />
+                  </label>
+                  <label>
+                    <span>Maximum semantic candidates</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="1000"
+                      value={serverSettings.maximumSemanticCandidates}
+                      onChange={(event) => setServerSettings({ ...serverSettings, maximumSemanticCandidates: Number(event.target.value) })}
+                    />
+                  </label>
+                </div>
+                <button className="secondary-button" type="submit" disabled={isSavingSettings}>
+                  {isSavingSettings ? 'Saving...' : 'Save server settings'}
+                </button>
+              </form>
+
+              <form className="settings-card" onSubmit={(event) => void updateRootAccount(event)}>
+                <h3>Root account</h3>
+                <p>Changing this account invalidates every existing remote login.</p>
+                <div className="settings-fields single-column">
+                  <label>
+                    <span>Account name</span>
+                    <input value={accountName} minLength={3} maxLength={64} onChange={(event) => setAccountName(event.target.value)} required />
+                  </label>
+                  <label>
+                    <span>New password</span>
+                    <input type="password" minLength={12} maxLength={256} autoComplete="new-password" value={newAccountPassword} onChange={(event) => setNewAccountPassword(event.target.value)} required />
+                  </label>
+                  <label>
+                    <span>Confirm new password</span>
+                    <input type="password" minLength={12} maxLength={256} autoComplete="new-password" value={confirmAccountPassword} onChange={(event) => setConfirmAccountPassword(event.target.value)} required />
+                  </label>
+                </div>
+                <button className="secondary-button" type="submit" disabled={isSavingSettings}>
+                  {isSavingSettings ? 'Updating...' : 'Update root account'}
+                </button>
+              </form>
+            </div>
+          )}
+        </section>
+      )}
 
       {showAiManager && capabilities?.isHostConnection && (
         <section className="ai-manager" aria-labelledby="ai-manager-title">
@@ -1462,13 +1743,31 @@ function App() {
                       {folder.subfolders.map((subfolder) => {
                         const depth = subfolder.relativePath.split('/').length
                         return (
-                          <span
+                          <div
+                            className="source-subfolder"
+                            data-excluded={subfolder.isExcluded}
                             key={subfolder.relativePath}
                             style={{ '--subfolder-depth': depth } as CSSProperties}
                             title={`${folder.name} / ${subfolder.relativePath}`}
                           >
-                            <i aria-hidden="true">↳</i> {subfolder.name}
-                          </span>
+                            <span className="source-subfolder-name">
+                              <i aria-hidden="true">↳</i> {subfolder.name}
+                            </span>
+                            <button
+                              type="button"
+                              className="subfolder-scan-toggle"
+                              aria-pressed={!subfolder.isExcluded}
+                              disabled={isUpdatingFolders || (subfolder.isExcluded && !subfolder.isDirectlyExcluded)}
+                              title={subfolder.isExcluded && !subfolder.isDirectlyExcluded
+                                ? 'Restore the excluded parent folder first'
+                                : subfolder.isDirectlyExcluded
+                                  ? 'Include this subfolder in the library again'
+                                  : 'Exclude this subfolder and everything below it'}
+                              onClick={() => void setSubfolderExcluded(folder, subfolder)}
+                            >
+                              {subfolder.isDirectlyExcluded ? 'Restore' : 'Exclude'}
+                            </button>
+                          </div>
                         )
                       })}
                     </div>
@@ -1564,7 +1863,7 @@ function App() {
             {folders.filter((folder) => folder.isAvailable).map((folder) => (
               <optgroup label={folder.name} key={folder.id}>
                 <option value={`${folder.id}::`}>{folder.name} / root and subfolders</option>
-                {folder.subfolders.map((subfolder) => (
+                {folder.subfolders.filter((subfolder) => !subfolder.isExcluded).map((subfolder) => (
                   <option value={`${folder.id}::${subfolder.relativePath}`} key={subfolder.relativePath}>
                     {'\u00a0\u00a0'.repeat(subfolder.relativePath.split('/').length)}↳ {subfolder.name}
                   </option>
@@ -1618,7 +1917,7 @@ function App() {
                 <option value={`${folder.id}::`}>
                   {folder.name} / root
                 </option>
-                {folder.subfolders.map((subfolder) => (
+                {folder.subfolders.filter((subfolder) => !subfolder.isExcluded).map((subfolder) => (
                   <option value={`${folder.id}::${subfolder.relativePath}`} key={subfolder.relativePath}>
                     {'\u00a0\u00a0'.repeat(subfolder.relativePath.split('/').length)}↳ {subfolder.name}
                   </option>
@@ -1773,6 +2072,126 @@ function App() {
       )}
     </main>
   )
+}
+
+function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
+  const [username, setUsername] = useState('root')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetch('/api/auth/status', { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await getErrorMessage(response))
+        const status = (await response.json()) as AuthStatus
+        setAuthStatus(status)
+        if (status.username) setUsername(status.username)
+      })
+      .catch((caughtError: unknown) => {
+        if (!(caughtError instanceof DOMException && caughtError.name === 'AbortError')) {
+          setAuthError(caughtError instanceof Error ? caughtError.message : 'Could not contact Gluj Drive.')
+        }
+      })
+    return () => controller.abort()
+  }, [])
+
+  const submitCredentials = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!authStatus) return
+    if (authStatus.setupRequired && password !== confirmPassword) {
+      setAuthError('The passwords do not match.')
+      return
+    }
+
+    setIsSubmitting(true)
+    setAuthError(null)
+    try {
+      const response = await fetch(authStatus.setupRequired ? '/api/auth/setup' : '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      if (!response.ok) throw new Error(await getErrorMessage(response))
+      setAuthStatus((await response.json()) as AuthStatus)
+      setPassword('')
+      setConfirmPassword('')
+    } catch (caughtError: unknown) {
+      setAuthError(caughtError instanceof Error ? caughtError.message : 'Authentication failed.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  if (!authStatus) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <p className="eyebrow">Personal media server</p>
+          <h1>Gluj Drive</h1>
+          {authError
+            ? <div className="auth-error"><strong>Connection failed: </strong>{authError}</div>
+            : <div className="auth-loading"><span className="loading-dot" /> Checking server access...</div>}
+        </section>
+      </main>
+    )
+  }
+
+  if (authStatus.setupRequired && !authStatus.isHostConnection) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <p className="eyebrow">Owner setup required</p>
+          <h1>Gluj Drive</h1>
+          <h2>Finish setup on the host PC</h2>
+          <p>The media library remains locked until its owner opens this page directly on the Windows computer and creates the root account.</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (authStatus.setupRequired || (!authStatus.isHostConnection && !authStatus.isAuthenticated)) {
+    const isSetup = authStatus.setupRequired
+    return (
+      <main className="auth-shell">
+        <form className="auth-card" onSubmit={(event) => void submitCredentials(event)}>
+          <p className="eyebrow">{isSetup ? 'First launch' : 'Private media library'}</p>
+          <h1>Gluj Drive</h1>
+          <h2>{isSetup ? 'Create the root account' : 'Sign in'}</h2>
+          <p>{isSetup
+            ? 'This single account protects every connection from another computer or phone. Local access on this PC can always bypass sign-in.'
+            : 'Use the root account created on the host computer.'}</p>
+          <label>
+            <span>Account name</span>
+            <input value={username} minLength={3} maxLength={64} autoComplete="username" onChange={(event) => setUsername(event.target.value)} required autoFocus />
+          </label>
+          <label>
+            <span>Password</span>
+            <input type="password" minLength={12} maxLength={256} autoComplete={isSetup ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} required />
+          </label>
+          {isSetup && (
+            <label>
+              <span>Confirm password</span>
+              <input type="password" minLength={12} maxLength={256} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required />
+            </label>
+          )}
+          {authError && <div className="auth-error" role="alert">{authError}</div>}
+          {!isSetup && !authStatus.isSecureConnection && (
+            <div className="auth-warning">This connection is not encrypted. Use HTTPS or a trusted private VPN before signing in over an untrusted network.</div>
+          )}
+          <button className="auth-submit" type="submit" disabled={isSubmitting}>
+            {isSubmitting ? 'Please wait...' : isSetup ? 'Secure Gluj Drive' : 'Sign in'}
+          </button>
+          <small>{isSetup ? 'Use at least 12 characters.' : 'Successful login is remembered for up to one year.'}</small>
+        </form>
+      </main>
+    )
+  }
+
+  return <LibraryApp authStatus={authStatus} onAuthStatusChange={setAuthStatus} />
 }
 
 export default App

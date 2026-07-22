@@ -85,6 +85,45 @@ public sealed class FoldersController(IAssetStorage assetStorage) : ControllerBa
         }
     }
 
+    [HttpPut("{folderId:guid}/subfolders/exclusion")]
+    [HostOnly]
+    [ProducesResponseType<SubfolderExclusionResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<SubfolderExclusionResponse>> SetSubfolderExclusionAsync(
+        Guid folderId,
+        SubfolderExclusionBody body,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await assetStorage.SetSubfolderExcludedAsync(
+                folderId,
+                body.RelativePath,
+                body.Excluded,
+                cancellationToken);
+            return result is null
+                ? NotFound()
+                : Ok(new SubfolderExclusionResponse(body.RelativePath, result.Value));
+        }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "The subfolder path is invalid.",
+                Detail = exception.Message
+            });
+        }
+        catch (DirectoryNotFoundException exception)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "The subfolder could not be found.",
+                Detail = exception.Message
+            });
+        }
+    }
+
     [HttpDelete("{folderId:guid}")]
     [HostOnly]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -127,6 +166,10 @@ public sealed record AddFolderBody(string Path, string? Name, bool MakeDefault);
 
 public sealed record EmptyFolderResponse(int MovedToTrash);
 
+public sealed record SubfolderExclusionBody(string RelativePath, bool Excluded);
+
+public sealed record SubfolderExclusionResponse(string RelativePath, bool Excluded);
+
 public sealed record FolderResponse(
     Guid Id,
     string Name,
@@ -168,11 +211,24 @@ public sealed record FolderResponse(
                 .Split('/')
                 .Any(part => part.Equals(".gluj-trash", StringComparison.OrdinalIgnoreCase)))
             .OrderBy(relativePath => relativePath, StringComparer.OrdinalIgnoreCase)
-            .Select(relativePath => new SourceSubfolderResponse(
-                System.IO.Path.GetFileName(relativePath),
-                relativePath))
+            .Select(relativePath =>
+            {
+                var matchingExclusion = (folder.ExcludedRelativePaths ?? [])
+                    .FirstOrDefault(excluded =>
+                        relativePath.Equals(excluded, StringComparison.OrdinalIgnoreCase) ||
+                        relativePath.StartsWith(excluded.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase));
+                return new SourceSubfolderResponse(
+                    System.IO.Path.GetFileName(relativePath),
+                    relativePath,
+                    matchingExclusion is not null,
+                    matchingExclusion?.Equals(relativePath, StringComparison.OrdinalIgnoreCase) == true);
+            })
             .ToArray();
     }
 }
 
-public sealed record SourceSubfolderResponse(string Name, string RelativePath);
+public sealed record SourceSubfolderResponse(
+    string Name,
+    string RelativePath,
+    bool IsExcluded,
+    bool IsDirectlyExcluded);
