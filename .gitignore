@@ -1,0 +1,24 @@
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# React / Node
+**/node_modules/
+**/dist/
+*.local
+
+# IDE and OS
+.vs/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime data
+data/
+logs/
+uploads/

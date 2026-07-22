@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GlujDrive.Application/GlujDrive.Application.csproj" />
+    <Project Path="src/GlujDrive.Domain/GlujDrive.Domain.csproj" />
+    <Project Path="src/GlujDrive.Infrastructure/GlujDrive.Infrastructure.csproj" />
+    <Project Path="src/GlujDrive.Server/GlujDrive.Server.csproj" />
+  </Folder>
+</Solution>

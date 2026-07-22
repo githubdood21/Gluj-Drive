@@ -1,0 +1,18 @@
+@GlujDrive.Server_HostAddress = http://localhost:5199
+
+GET {{GlujDrive.Server_HostAddress}}/api/health
+Accept: application/json
+
+###
+### Semantic-search status (host only)
+GET {{GlujDrive.Server_HostAddress}}/api/ai/status
+Accept: application/json
+
+### Hybrid filename and semantic search
+POST {{GlujDrive.Server_HostAddress}}/api/search
+Content-Type: application/json
+
+{
+  "query": "sunset at the beach",
+  "pageSize": 60
+}
