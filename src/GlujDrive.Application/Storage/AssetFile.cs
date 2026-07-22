@@ -7,6 +7,7 @@ public sealed record AssetFile(
     string RelativePath,
     string FileName,
     string ContentType,
+    AssetMediaKind MediaKind,
     long Length,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset ModifiedAtUtc);

@@ -45,7 +45,10 @@ public sealed record SemanticStatus(
     string? InstallError,
     SemanticJobStatus Job);
 
-public sealed record SemanticMatch(Guid AssetId, double Score);
+public sealed record SemanticMatch(
+    Guid AssetId,
+    double Score,
+    double? Confidence);
 
 public sealed record SemanticSearchResult(
     IReadOnlyList<SemanticMatch> Matches,

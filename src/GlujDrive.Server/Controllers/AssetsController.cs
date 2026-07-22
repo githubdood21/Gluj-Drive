@@ -123,10 +123,11 @@ public sealed class AssetsController(
         {
             if (assetById.TryGetValue(match.AssetId, out var asset))
             {
-                responses.Add(await AssetResponse.FromAssetAsync(
+                var response = await AssetResponse.FromAssetAsync(
                     asset,
                     visualService,
-                    cancellationToken));
+                    cancellationToken);
+                responses.Add(response with { MatchConfidence = match.Confidence });
             }
         }
 

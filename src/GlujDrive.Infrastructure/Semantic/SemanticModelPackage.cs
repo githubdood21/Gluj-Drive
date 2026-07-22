@@ -394,7 +394,8 @@ internal sealed class SemanticModelPackage
         if (!actualHash.Equals(normalizedExpected, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                $"SHA-256 verification failed for '{Path.GetFileName(path)}'.");
+                $"SHA-256 verification failed for '{Path.GetFileName(path)}': " +
+                $"expected {normalizedExpected.ToLowerInvariant()}, received {actualHash.ToLowerInvariant()}.");
         }
     }
 }

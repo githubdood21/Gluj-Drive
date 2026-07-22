@@ -14,14 +14,19 @@ public sealed class CachedAssetVisualService : IAssetVisualService
     private const string FallbackColor = "#34303A";
     private readonly IAssetStorage _assetStorage;
     private readonly string _cachePath;
+    private readonly FfmpegVideoFrameExtractor _videoFrameExtractor;
     private readonly SemaphoreSlim _processingSlots = new(2, 2);
 
-    public CachedAssetVisualService(string catalogPath, IAssetStorage assetStorage)
+    public CachedAssetVisualService(
+        string catalogPath,
+        IAssetStorage assetStorage,
+        string ffmpegPath = "ffmpeg")
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(catalogPath);
         ArgumentNullException.ThrowIfNull(assetStorage);
 
         _assetStorage = assetStorage;
+        _videoFrameExtractor = new FfmpegVideoFrameExtractor(ffmpegPath);
         _cachePath = Path.Combine(Path.GetFullPath(catalogPath), "previews");
         Directory.CreateDirectory(_cachePath);
     }
@@ -69,10 +74,13 @@ public sealed class CachedAssetVisualService : IAssetVisualService
                 if (!File.Exists(cachePath) &&
                     !await GeneratePreviewAsync(asset, cachePath, size, cancellationToken))
                 {
-                    await WriteTextAtomicallyAsync(
-                        unsupportedMarkerPath,
-                        "This image format could not be decoded by the preview pipeline.",
-                        cancellationToken);
+                    if (asset.MediaKind != AssetMediaKind.Video)
+                    {
+                        await WriteTextAtomicallyAsync(
+                            unsupportedMarkerPath,
+                            "This media format could not be decoded by the preview pipeline.",
+                            cancellationToken);
+                    }
                     return null;
                 }
             }
@@ -109,11 +117,25 @@ public sealed class CachedAssetVisualService : IAssetVisualService
             return false;
         }
 
-        await using var content = source.Content;
+        await using var originalContent = source.Content;
+        Stream? extractedFrame = null;
 
         try
         {
             var maximumDimension = size == AssetPreviewSize.Low ? 64 : 640;
+            if (asset.MediaKind == AssetMediaKind.Video)
+            {
+                extractedFrame = await _videoFrameExtractor.ExtractFirstFrameAsync(
+                    originalContent,
+                    maximumDimension,
+                    cancellationToken);
+                if (extractedFrame is null)
+                {
+                    return false;
+                }
+            }
+
+            var content = extractedFrame ?? originalContent;
             using var image = await SharpImage.LoadAsync<Rgba32>(
                 new DecoderOptions
                 {
@@ -191,6 +213,13 @@ public sealed class CachedAssetVisualService : IAssetVisualService
         catch (Exception exception) when (IsUnsupportedImage(exception))
         {
             return false;
+        }
+        finally
+        {
+            if (extractedFrame is not null)
+            {
+                await extractedFrame.DisposeAsync();
+            }
         }
     }
 

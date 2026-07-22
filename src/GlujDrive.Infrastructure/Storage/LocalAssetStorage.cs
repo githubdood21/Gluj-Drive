@@ -262,9 +262,9 @@ public sealed class LocalAssetStorage : IAssetStorage
 
         var fileName = NormalizeClientFileName(request.FileName);
 
-        if (!SupportedImageTypes.TryGetContentType(fileName, out var contentType))
+        if (!SupportedMediaTypes.TryGetContentType(fileName, out var contentType))
         {
-            throw new ArgumentException("The image format is not supported.", nameof(request));
+            throw new ArgumentException("The media format is not supported.", nameof(request));
         }
 
         await _gate.WaitAsync(cancellationToken);
@@ -511,7 +511,7 @@ public sealed class LocalAssetStorage : IAssetStorage
                 var relativePath = Path.GetRelativePath(folder.Path, filePath);
 
                 if (ContainsTrashDirectory(relativePath) ||
-                    !SupportedImageTypes.TryGetContentType(filePath, out var contentType))
+                    !SupportedMediaTypes.TryGetContentType(filePath, out var contentType))
                 {
                     continue;
                 }
@@ -539,6 +539,7 @@ public sealed class LocalAssetStorage : IAssetStorage
         var fileInfo = new FileInfo(fullPath);
         var relativePath = Path.GetRelativePath(folder.Path, fileInfo.FullName);
         var assetId = CreateAssetId(folder.Id, relativePath);
+        SupportedMediaTypes.TryGet(fileInfo.Name, out var mediaType);
         var asset = new AssetFile(
             assetId,
             folder.Id,
@@ -546,6 +547,7 @@ public sealed class LocalAssetStorage : IAssetStorage
             relativePath.Replace(Path.DirectorySeparatorChar, '/'),
             fileInfo.Name,
             contentType,
+            mediaType.Kind,
             fileInfo.Length,
             new DateTimeOffset(fileInfo.CreationTimeUtc),
             new DateTimeOffset(fileInfo.LastWriteTimeUtc));

@@ -25,7 +25,7 @@ public sealed class UploadsController(
         {
             return BadRequest(new ProblemDetails
             {
-                Title = "Select at least one image to upload."
+                Title = "Select at least one media file to upload."
             });
         }
 
@@ -66,12 +66,12 @@ public sealed class UploadsController(
             });
         }
 
-        if (files.Any(file => !SupportedImageTypes.TryGetContentType(file.FileName, out _)))
+        if (files.Any(file => !SupportedMediaTypes.TryGetContentType(file.FileName, out _)))
         {
             return BadRequest(new ProblemDetails
             {
-                Title = "One or more image formats are not supported.",
-                Detail = $"Supported extensions: {SupportedImageTypes.DisplayExtensions}."
+                Title = "One or more media formats are not supported.",
+                Detail = $"Supported extensions: {SupportedMediaTypes.DisplayExtensions}."
             });
         }
 
@@ -106,7 +106,7 @@ public sealed class UploadsController(
             foreach (var file in files)
             {
                 await using var content = file.OpenReadStream();
-                SupportedImageTypes.TryGetContentType(file.FileName, out var contentType);
+                SupportedMediaTypes.TryGetContentType(file.FileName, out var contentType);
                 var asset = await assetStorage.StoreAsync(
                     new StoreAssetRequest(
                         targetFolder.Id,
@@ -150,6 +150,8 @@ public sealed record AssetResponse(
     string RelativePath,
     string FileName,
     string ContentType,
+    string MediaKind,
+    string FileExtension,
     long Length,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset ModifiedAtUtc,
@@ -157,7 +159,8 @@ public sealed record AssetResponse(
     string ViewUrl,
     string DownloadUrl,
     string LowPreviewUrl,
-    string PreviewUrl)
+    string PreviewUrl,
+    double? MatchConfidence = null)
 {
     public static async Task<AssetResponse> FromAssetAsync(
         AssetFile asset,
@@ -173,6 +176,8 @@ public sealed record AssetResponse(
             asset.RelativePath,
             asset.FileName,
             asset.ContentType,
+            asset.MediaKind.ToString().ToLowerInvariant(),
+            Path.GetExtension(asset.FileName).TrimStart('.').ToUpperInvariant(),
             asset.Length,
             asset.CreatedAtUtc,
             asset.ModifiedAtUtc,

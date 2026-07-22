@@ -46,6 +46,17 @@ var semanticOptions = builder.Configuration
 var semanticDataPath = Path.GetFullPath(
     semanticOptions.DataPath,
     builder.Environment.ContentRootPath);
+var configuredFfmpegPath = builder.Configuration["Media:FfmpegPath"] ??
+    "runtime/ffmpeg/win-x64/ffmpeg.exe";
+var ffmpegPath = Path.IsPathRooted(configuredFfmpegPath)
+    ? configuredFfmpegPath
+    : Path.GetFullPath(configuredFfmpegPath, builder.Environment.ContentRootPath);
+
+if (!File.Exists(ffmpegPath))
+{
+    // Development machines may already provide FFmpeg through PATH.
+    ffmpegPath = "ffmpeg";
+}
 semanticOptions.BundledPackagePath = Path.GetFullPath(
     semanticOptions.BundledPackagePath,
     builder.Environment.ContentRootPath);
@@ -56,12 +67,16 @@ semanticOptions.BundledPackageSha256Path = Path.GetFullPath(
 builder.Services.AddSingleton(storageOptions);
 builder.Services.AddSingleton<IAssetStorage>(new LocalAssetStorage(catalogPath, defaultFolderPath));
 builder.Services.AddSingleton<IAssetVisualService>(services =>
-    new CachedAssetVisualService(catalogPath, services.GetRequiredService<IAssetStorage>()));
+    new CachedAssetVisualService(
+        catalogPath,
+        services.GetRequiredService<IAssetStorage>(),
+        ffmpegPath));
 builder.Services.AddSingleton<IFolderPicker, WindowsFolderPicker>();
 builder.Services.AddSingleton(semanticOptions);
 builder.Services.AddSingleton<ISemanticSearchService>(services =>
     SemanticSearchService.Create(
         services.GetRequiredService<IAssetStorage>(),
+        services.GetRequiredService<IAssetVisualService>(),
         semanticOptions,
         new HttpClient { Timeout = Timeout.InfiniteTimeSpan },
         semanticDataPath,

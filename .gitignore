@@ -27,3 +27,7 @@ conversion/
 # Generated AI release artifacts (upload to GitHub Releases, not Git)
 src/GlujDrive.Server/ai/*.zip
 src/GlujDrive.Server/ai/*.zip.sha256
+
+# Locally supplied FFmpeg release files. Published builds copy these automatically.
+src/GlujDrive.Server/runtime/ffmpeg/win-x64/*
+!src/GlujDrive.Server/runtime/ffmpeg/win-x64/README.md

@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using GlujDrive.Application.Semantic;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 
@@ -99,7 +100,10 @@ internal sealed class NativeTinyClipInference : IDisposable
         string computeSelection,
         CancellationToken cancellationToken = default)
     {
-        using var image = await SixLabors.ImageSharp.Image.LoadAsync<Rgb24>(imageStream, cancellationToken);
+        using var image = await SixLabors.ImageSharp.Image.LoadAsync<Rgb24>(
+            new DecoderOptions { MaxFrames = 1 },
+            imageStream,
+            cancellationToken);
         image.Mutate(context => context.Resize(new ResizeOptions
         {
             Size = new SixLabors.ImageSharp.Size(manifest.ImageWidth, manifest.ImageHeight),

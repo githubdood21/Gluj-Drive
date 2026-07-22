@@ -21,4 +21,13 @@ public sealed class SemanticSearchOptions
     public string? ModelPackageSha256 { get; set; }
 
     public int IdleUnloadMinutes { get; set; } = 5;
+
+    // TinyCLIP cosine similarity is not a probability. Values below this floor
+    // are too weak to participate in semantic ranking by default.
+    public double MinimumTextSimilarity { get; set; } = 0.22;
+
+    // Also reject candidates that trail the best in-scope result substantially.
+    public double MaximumTextSimilarityDrop { get; set; } = 0.04;
+
+    public int MaximumSemanticCandidates { get; set; } = 200;
 }

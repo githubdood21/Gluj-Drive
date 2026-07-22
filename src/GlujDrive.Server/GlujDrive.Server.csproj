@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Content Include="ai\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="runtime\ffmpeg\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="PublishFrontend" BeforeTargets="ComputeFilesToPublish">

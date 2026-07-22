@@ -16,6 +16,7 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
     private readonly object _stateGate = new();
     private readonly SemaphoreSlim _jobPersistGate = new(1, 1);
     private readonly IAssetStorage _assetStorage;
+    private readonly IAssetVisualService _visualService;
     private readonly SemanticSearchOptions _options;
     private readonly SemanticCatalog _catalog;
     private readonly SemanticModelPackage _modelPackage;
@@ -34,6 +35,7 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
 
     private SemanticSearchService(
         IAssetStorage assetStorage,
+        IAssetVisualService visualService,
         SemanticSearchOptions options,
         SemanticCatalog catalog,
         SemanticModelPackage modelPackage,
@@ -42,6 +44,7 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         ILogger<SemanticSearchService> logger)
     {
         _assetStorage = assetStorage;
+        _visualService = visualService;
         _options = options;
         _catalog = catalog;
         _modelPackage = modelPackage;
@@ -52,6 +55,7 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
 
     public static SemanticSearchService Create(
         IAssetStorage assetStorage,
+        IAssetVisualService visualService,
         SemanticSearchOptions options,
         HttpClient httpClient,
         string dataPath,
@@ -63,6 +67,7 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         var index = new SemanticVectorIndex(dataPath);
         var service = new SemanticSearchService(
             assetStorage,
+            visualService,
             options,
             catalog,
             package,
@@ -249,6 +254,8 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         var limit = Math.Clamp(maximumResults, 1, 1000);
         var lexical = RankLexically(normalizedQuery, assets);
         var records = await _catalog.ListAsync(cancellationToken);
+        var recordByKey = records.ToDictionary(record => record.VectorKey);
+        var allowedAssetIds = assets.Select(asset => asset.Id).ToHashSet();
         var manifest = await _modelPackage.GetInstalledManifestAsync(cancellationToken: cancellationToken);
         var semanticParticipated = false;
         IReadOnlyList<(ulong Key, float Similarity)> semantic = [];
@@ -260,11 +267,17 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
             {
                 await _vectorIndex.EnsureLoadedAsync(manifest, records, cancellationToken);
                 var compute = await GetComputeSelectionAsync(cancellationToken);
-                var queryVector = await _inference.EmbedTextAsync(
+                var directVector = await _inference.EmbedTextAsync(
                     normalizedQuery,
                     manifest,
                     compute,
                     cancellationToken);
+                var photoVector = await _inference.EmbedTextAsync(
+                    $"a photo of {normalizedQuery}",
+                    manifest,
+                    compute,
+                    cancellationToken);
+                var queryVector = AverageNormalized(directVector, photoVector);
                 semantic = await _vectorIndex.SearchAsync(queryVector, limit, cancellationToken);
                 semanticParticipated = true;
             }
@@ -278,23 +291,35 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
             }
         }
 
-        var recordByKey = records.ToDictionary(record => record.VectorKey);
         var scores = new Dictionary<Guid, double>();
+        var confidenceByAsset = new Dictionary<Guid, double>();
 
         for (var rank = 0; rank < lexical.Count; rank++)
         {
             scores[lexical[rank].Id] = 1d / (RrfConstant + rank + 1);
         }
 
-        for (var rank = 0; rank < semantic.Count; rank++)
+        var eligibleSemantic = semantic
+            .Where(match => recordByKey.TryGetValue(match.Key, out var record) &&
+                            allowedAssetIds.Contains(record.AssetId))
+            .ToArray();
+        var bestSimilarity = eligibleSemantic.FirstOrDefault().Similarity;
+        var similarityFloor = Math.Max(
+            Math.Clamp(_options.MinimumTextSimilarity, -1d, 1d),
+            bestSimilarity - Math.Clamp(_options.MaximumTextSimilarityDrop, 0d, 2d));
+        var acceptedSemantic = eligibleSemantic
+            .Where(match => match.Similarity >= similarityFloor)
+            .Take(Math.Clamp(_options.MaximumSemanticCandidates, 1, limit))
+            .ToArray();
+
+        for (var rank = 0; rank < acceptedSemantic.Length; rank++)
         {
-            if (!recordByKey.TryGetValue(semantic[rank].Key, out var record))
-            {
-                continue;
-            }
+            var match = acceptedSemantic[rank];
+            var record = recordByKey[match.Key];
 
             scores[record.AssetId] = scores.GetValueOrDefault(record.AssetId) +
                                      1d / (RrfConstant + rank + 1);
+            confidenceByAsset[record.AssetId] = ToConfidence(match.Similarity);
         }
 
         var exact = assets.FirstOrDefault(asset =>
@@ -307,12 +332,25 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         }
 
         var matches = scores
-            .OrderByDescending(pair => pair.Value)
-            .ThenBy(pair => pair.Key)
+            .Select(pair => new
+            {
+                pair.Key,
+                Score = pair.Value,
+                Confidence = confidenceByAsset.GetValueOrDefault(pair.Key, -1d),
+                IsExact = exact?.Id == pair.Key
+            })
+            .OrderByDescending(match => match.IsExact)
+            .ThenByDescending(match => match.Confidence)
+            .ThenByDescending(match => match.Score)
+            .ThenBy(match => match.Key)
             .Take(limit)
-            .Select(pair => new SemanticMatch(pair.Key, pair.Value))
+            .Select(match => new SemanticMatch(
+                match.Key,
+                match.Score,
+                match.Confidence >= 0d ? match.Confidence : null))
             .ToArray();
         var indexed = manifest is null ? 0 : records.Count(record =>
+            allowedAssetIds.Contains(record.AssetId) &&
             record.ModelFingerprint == manifest.Fingerprint && record.Embedding is not null);
 
         return new SemanticSearchResult(matches, semanticParticipated, indexed, assets.Count);
@@ -345,7 +383,10 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
         var matches = nearest
             .Where(match => recordByKey.TryGetValue(match.Key, out var record) && record.AssetId != assetId)
             .Take(Math.Clamp(maximumResults, 1, 1000))
-            .Select(match => new SemanticMatch(recordByKey[match.Key].AssetId, match.Similarity))
+            .Select(match => new SemanticMatch(
+                recordByKey[match.Key].AssetId,
+                match.Similarity,
+                ToConfidence(match.Similarity)))
             .ToArray();
         var indexed = records.Count(record =>
             record.ModelFingerprint == manifest.Fingerprint && record.Embedding is not null);
@@ -457,12 +498,26 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
 
                 try
                 {
-                    var readResult = await _assetStorage.OpenReadAsync(asset.Id, cancellationToken) ??
-                                     throw new FileNotFoundException("The image disappeared during analysis.");
-                    await using (readResult.Content)
+                    AssetPreview? framePreview = null;
+                    AssetReadResult? readResult = null;
+                    if (asset.MediaKind is AssetMediaKind.Animation or AssetMediaKind.Video)
+                    {
+                        framePreview = await _visualService.OpenPreviewAsync(
+                            asset,
+                            AssetPreviewSize.Medium,
+                            cancellationToken) ??
+                            throw new InvalidDataException("The first media frame could not be decoded.");
+                    }
+                    else
+                    {
+                        readResult = await _assetStorage.OpenReadAsync(asset.Id, cancellationToken) ??
+                            throw new FileNotFoundException("The image disappeared during analysis.");
+                    }
+
+                    await using var inferenceContent = framePreview?.Content ?? readResult!.Content;
                     {
                         var embedding = await _inference.EmbedImageAsync(
-                            readResult.Content,
+                            inferenceContent,
                             manifest,
                             compute,
                             cancellationToken);
@@ -649,6 +704,38 @@ public sealed class SemanticSearchService : ISemanticSearchService, IDisposable
             .ThenByDescending(asset => asset.FileName.StartsWith(query, StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(asset => asset.ModifiedAtUtc)
             .ToList();
+
+    private static double ToConfidence(float cosineSimilarity) =>
+        Math.Clamp(cosineSimilarity, 0f, 1f);
+
+    private static float[] AverageNormalized(params float[][] vectors)
+    {
+        if (vectors.Length == 0 || vectors.Any(vector => vector.Length != vectors[0].Length))
+        {
+            throw new ArgumentException("Semantic vectors must have matching dimensions.", nameof(vectors));
+        }
+
+        var result = new float[vectors[0].Length];
+        foreach (var vector in vectors)
+        {
+            for (var index = 0; index < result.Length; index++)
+            {
+                result[index] += vector[index];
+            }
+        }
+
+        var length = Math.Sqrt(result.Sum(value => value * value));
+        if (length <= double.Epsilon)
+        {
+            throw new InvalidDataException("The combined text embedding was empty.");
+        }
+
+        for (var index = 0; index < result.Length; index++)
+        {
+            result[index] = (float)(result[index] / length);
+        }
+        return result;
+    }
 
     private static SemanticJobStatus EmptyJob(string state) => new(
         state,

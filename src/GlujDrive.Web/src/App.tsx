@@ -9,6 +9,8 @@ type Asset = {
   relativePath: string
   fileName: string
   contentType: string
+  mediaKind: 'image' | 'animation' | 'video'
+  fileExtension: string
   length: number
   createdAtUtc: string
   modifiedAtUtc: string
@@ -17,6 +19,7 @@ type Asset = {
   downloadUrl: string
   lowPreviewUrl: string
   previewUrl: string
+  matchConfidence?: number | null
 }
 
 type SourceFolder = {
@@ -106,6 +109,7 @@ type ProblemDetails = {
 
 type Theme = 'light' | 'dark'
 type LibraryView = 'timeline' | 'folders'
+type MediaKind = Asset['mediaKind']
 type AlbumNode = {
   key: string
   name: string
@@ -116,6 +120,16 @@ type AlbumNode = {
   children: AlbumNode[]
 }
 const LOAD_BATCH_SIZE = 24
+const ALL_MEDIA_KINDS: MediaKind[] = ['image', 'animation', 'video']
+
+function parseFolderScope(value: string) {
+  if (!value) return { folderId: null, relativePath: null }
+  const separatorIndex = value.indexOf('::')
+  return {
+    folderId: value.slice(0, separatorIndex),
+    relativePath: value.slice(separatorIndex + 2) || null,
+  }
+}
 
 function getInitialTheme(): Theme {
   try {
@@ -226,7 +240,7 @@ function countAlbumAssets(node: AlbumNode): number {
 }
 
 function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Asset) => void }) {
-  const [previewStage, setPreviewStage] = useState<'color' | 'low' | 'medium'>('color')
+  const [previewStage, setPreviewStage] = useState<'color' | 'low' | 'medium' | 'native'>('color')
   const cardRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
@@ -269,17 +283,35 @@ function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Ass
       ? asset.lowPreviewUrl
       : null
 
+  const handlePreviewError = () => {
+    setPreviewStage(asset.mediaKind === 'video' ? 'native' : 'color')
+  }
+
   return (
     <article className="photo-card" ref={cardRef} style={{ '--average-color': asset.averageColor } as CSSProperties}>
       <button className="photo-link" type="button" onClick={() => onOpen(asset)} aria-label={'View ' + asset.fileName}>
-        {previewUrl && (
+        {previewUrl && previewStage !== 'native' && (
           <img
             src={previewUrl}
             alt={asset.fileName}
             loading="lazy"
             decoding="async"
-            onError={() => setPreviewStage('color')}
+            onError={handlePreviewError}
           />
+        )}
+        {previewStage === 'native' && asset.mediaKind === 'video' && (
+          <video src={asset.viewUrl} muted playsInline preload="metadata" aria-label={asset.fileName} />
+        )}
+        <span className="media-badges">
+          <span>{asset.fileExtension}</span>
+          {asset.mediaKind !== 'image' && (
+            <span>{asset.mediaKind === 'animation' ? 'Animation' : 'Video'}</span>
+          )}
+        </span>
+        {asset.matchConfidence !== null && asset.matchConfidence !== undefined && (
+          <span className="match-confidence" title="Raw TinyCLIP cosine similarity, not a probability">
+            {Math.round(asset.matchConfidence * 100)}% similarity
+          </span>
         )}
       </button>
       <div className="photo-details">
@@ -326,7 +358,7 @@ function AlbumSection({
           </span>
         </button>
         <div className="folder-heading-actions">
-          <span>{assetCount} {assetCount === 1 ? 'picture' : 'pictures'}</span>
+          <span>{assetCount} {assetCount === 1 ? 'item' : 'items'}</span>
           {node.depth === 0 && isHostConnection && (
             <button className="text-button danger-button" type="button" onClick={() => onEmpty(node.folder)}>Empty folder</button>
           )}
@@ -383,8 +415,6 @@ function ImageViewer({
   const [isDeleting, setIsDeleting] = useState(false)
   const scaleRef = useRef(1)
   const pointers = useRef(new Map<number, { x: number; y: number }>())
-  const backgroundPointers = useRef(new Set<number>())
-  const completedOnBackground = useRef(false)
   const lastPinchDistance = useRef<number | null>(null)
   const currentIndex = assets.findIndex((candidate) => candidate.id === asset.id)
 
@@ -431,9 +461,6 @@ function ImageViewer({
   }
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) {
-      backgroundPointers.current.add(event.pointerId)
-    }
     event.currentTarget.setPointerCapture(event.pointerId)
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
   }
@@ -463,8 +490,6 @@ function ImageViewer({
   }
 
   const handlePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    completedOnBackground.current = backgroundPointers.current.has(event.pointerId)
-    backgroundPointers.current.delete(event.pointerId)
     pointers.current.delete(event.pointerId)
     lastPinchDistance.current = null
   }
@@ -484,12 +509,21 @@ function ImageViewer({
         <div className="viewer-title">
           <strong>{asset.fileName}</strong>
           <span>{currentIndex + 1} of {assets.length}</span>
+          {asset.matchConfidence !== null && asset.matchConfidence !== undefined && (
+            <span title="Raw TinyCLIP cosine similarity, not a probability">
+              {Math.round(asset.matchConfidence * 100)}% semantic similarity
+            </span>
+          )}
           <small title={formatAssetLocation(asset)}>{formatAssetLocation(asset)}</small>
         </div>
         <div className="viewer-controls">
-          <button type="button" onClick={() => changeScale(scaleRef.current / 1.25)} aria-label="Zoom out">−</button>
-          <button type="button" onClick={resetView}>{Math.round(scale * 100)}%</button>
-          <button type="button" onClick={() => changeScale(scaleRef.current * 1.25)} aria-label="Zoom in">+</button>
+          {asset.mediaKind !== 'video' && (
+            <>
+              <button type="button" onClick={() => changeScale(scaleRef.current / 1.25)} aria-label="Zoom out">−</button>
+              <button type="button" onClick={resetView}>{Math.round(scale * 100)}%</button>
+              <button type="button" onClick={() => changeScale(scaleRef.current * 1.25)} aria-label="Zoom in">+</button>
+            </>
+          )}
           <a href={asset.downloadUrl}>Download</a>
           <button type="button" onClick={() => void onFindSimilar(asset)} disabled={!canFindSimilar}>Find similar</button>
           <button className="viewer-delete" type="button" onClick={() => setConfirmDelete(true)}>Delete</button>
@@ -502,45 +536,56 @@ function ImageViewer({
         type="button"
         disabled={currentIndex <= 0}
         onClick={() => moveTo(currentIndex - 1)}
-        aria-label="Previous picture"
+        aria-label="Previous media item"
       >‹</button>
       <div
-        className="viewer-stage"
+        className={`viewer-stage${asset.mediaKind === 'video' ? ' viewer-stage-video' : ''}`}
         onClick={(event) => {
-          if (event.target === event.currentTarget && completedOnBackground.current) {
+          if (event.target === event.currentTarget) {
             onClose()
           }
-          completedOnBackground.current = false
         }}
-        onWheel={handleWheel}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerEnd}
-        onPointerCancel={handlePointerEnd}
-        onDoubleClick={() => changeScale(scaleRef.current > 1 ? 1 : 2)}
+        onWheel={asset.mediaKind === 'video' ? undefined : handleWheel}
+        onPointerDown={asset.mediaKind === 'video' ? undefined : handlePointerDown}
+        onPointerMove={asset.mediaKind === 'video' ? undefined : handlePointerMove}
+        onPointerUp={asset.mediaKind === 'video' ? undefined : handlePointerEnd}
+        onPointerCancel={asset.mediaKind === 'video' ? undefined : handlePointerEnd}
+        onDoubleClick={asset.mediaKind === 'video' ? undefined : () => changeScale(scaleRef.current > 1 ? 1 : 2)}
       >
-        <img
-          src={asset.viewUrl}
-          alt={asset.fileName}
-          draggable="false"
-          style={{ transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})` }}
-        />
+        {asset.mediaKind === 'video' ? (
+          <video
+            key={asset.id}
+            className="viewer-video"
+            src={asset.viewUrl}
+            controls
+            autoPlay
+            playsInline
+            preload="metadata"
+          />
+        ) : (
+          <img
+            src={asset.viewUrl}
+            alt={asset.fileName}
+            draggable="false"
+            style={{ transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})` }}
+          />
+        )}
       </div>
       <button
         className="viewer-nav viewer-next"
         type="button"
         disabled={currentIndex >= assets.length - 1}
         onClick={() => moveTo(currentIndex + 1)}
-        aria-label="Next picture"
+        aria-label="Next media item"
       >›</button>
 
       {confirmDelete && (
         <div className="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="delete-picture-title">
           <p className="eyebrow">Move to trash</p>
-          <h2 id="delete-picture-title">Delete this picture?</h2>
+          <h2 id="delete-picture-title">Delete this media item?</h2>
           <p><strong>{asset.fileName}</strong> will be moved to the folder’s <code>.gluj-trash</code> directory.</p>
           <div className="confirm-actions">
-            <button type="button" onClick={() => setConfirmDelete(false)} disabled={isDeleting}>Keep picture</button>
+            <button type="button" onClick={() => setConfirmDelete(false)} disabled={isDeleting}>Keep item</button>
             <button className="destructive-action" type="button" onClick={() => void deleteAsset()} disabled={isDeleting}>
               {isDeleting ? 'Deleting…' : 'Move to trash'}
             </button>
@@ -574,6 +619,8 @@ function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [libraryView, setLibraryView] = useState<LibraryView>('timeline')
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchScope, setSearchScope] = useState('')
+  const [searchMediaKinds, setSearchMediaKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS)
   const [searchView, setSearchView] = useState<SearchView | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   const [visibleCount, setVisibleCount] = useState(LOAD_BATCH_SIZE)
@@ -724,7 +771,7 @@ function App() {
 
   const uploadFiles = async (files: File[]) => {
     if (files.length === 0 || !selectedFolderId) {
-      setError('Select an available upload folder and at least one image.')
+      setError('Select an available upload folder and at least one media file.')
       return
     }
 
@@ -754,7 +801,7 @@ function App() {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : 'The images could not be uploaded.',
+          : 'The media files could not be uploaded.',
       )
     } finally {
       setIsUploading(false)
@@ -938,13 +985,23 @@ function App() {
     cursor: string | null,
     append: boolean,
     requestId: number,
+    scope: string,
+    mediaKinds: MediaKind[],
   ) => {
     setIsSearching(true)
     try {
+      const parsedScope = parseFolderScope(scope)
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, pageSize: 100, cursor }),
+        body: JSON.stringify({
+          query,
+          pageSize: 100,
+          cursor,
+          folderId: parsedScope.folderId,
+          relativePath: parsedScope.relativePath,
+          mediaKinds: mediaKinds.length === ALL_MEDIA_KINDS.length ? null : mediaKinds,
+        }),
       })
       if (!response.ok) throw new Error(await getErrorMessage(response))
       const result = (await response.json()) as SearchResponse
@@ -955,7 +1012,9 @@ function App() {
           ? [...current.items, ...result.items]
           : result.items,
         kind: 'query',
-        label: result.semanticParticipated
+        label: !query
+          ? 'Filtered library'
+          : result.semanticParticipated
           ? `Semantic search${result.eligible > 0 ? ` · ${Math.round(result.indexed * 100 / result.eligible)}% indexed` : ''}`
           : 'Filename search',
       }))
@@ -970,9 +1029,10 @@ function App() {
 
   useEffect(() => {
     const query = searchQuery.trim()
+    const hasActiveFilters = Boolean(searchScope) || searchMediaKinds.length !== ALL_MEDIA_KINDS.length
     const requestId = ++searchRequestRef.current
 
-    if (!query) {
+    if (!query && !hasActiveFilters) {
       setSearchView((current) => current?.kind === 'query' ? null : current)
       setIsSearching(false)
       return
@@ -981,10 +1041,10 @@ function App() {
     setSearchView(null)
     setIsSearching(true)
     const timer = window.setTimeout(() => {
-      void loadSearchPage(query, null, false, requestId)
+      void loadSearchPage(query, null, false, requestId, searchScope, searchMediaKinds)
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [loadSearchPage, searchQuery])
+  }, [loadSearchPage, searchMediaKinds, searchQuery, searchScope])
 
   const findSimilar = useCallback(async (asset: Asset) => {
     const requestId = ++searchRequestRef.current
@@ -998,6 +1058,8 @@ function App() {
         throw new Error('Analyze this picture before using Find similar.')
       }
       setSearchQuery('')
+      setSearchScope('')
+      setSearchMediaKinds(ALL_MEDIA_KINDS)
       setSearchView({
         ...result,
         nextCursor: null,
@@ -1019,17 +1081,26 @@ function App() {
 
   const filteredAssets = useMemo(() => {
     if (searchView) return searchView.items
-    return searchQuery.trim() ? [] : assets
-  }, [assets, searchQuery, searchView])
+    const hasActiveFilters = Boolean(searchScope) || searchMediaKinds.length !== ALL_MEDIA_KINDS.length
+    return searchQuery.trim() || hasActiveFilters ? [] : assets
+  }, [assets, searchMediaKinds.length, searchQuery, searchScope, searchView])
 
-  const orderedAssets = useMemo(() => [...filteredAssets].sort((left, right) =>
-    new Date(right.modifiedAtUtc).getTime() - new Date(left.modifiedAtUtc).getTime()), [filteredAssets])
+  const orderedAssets = useMemo(() => {
+    if (searchView) {
+      // The server has the complete result set and preserves exact lexical
+      // matches before similarity-ranked results across cursor pages.
+      return [...filteredAssets]
+    }
+
+    return [...filteredAssets].sort((left, right) =>
+      new Date(right.modifiedAtUtc).getTime() - new Date(left.modifiedAtUtc).getTime())
+  }, [filteredAssets, searchView])
   const visibleAssets = orderedAssets.slice(0, visibleCount)
   const hasMoreAssets = visibleCount < orderedAssets.length || Boolean(searchView?.nextCursor)
 
   useEffect(() => {
     setVisibleCount(LOAD_BATCH_SIZE)
-  }, [libraryView, searchQuery, searchView?.label])
+  }, [libraryView, searchMediaKinds, searchQuery, searchScope, searchView?.label])
 
   useEffect(() => {
     const target = loadMoreRef.current
@@ -1046,6 +1117,8 @@ function App() {
               searchView.nextCursor,
               true,
               searchRequestRef.current,
+              searchScope,
+              searchMediaKinds,
             )
           }
         }
@@ -1055,7 +1128,7 @@ function App() {
 
     observer.observe(target)
     return () => observer.disconnect()
-  }, [hasMoreAssets, isSearching, loadSearchPage, orderedAssets.length, searchQuery, searchView, visibleCount])
+  }, [hasMoreAssets, isSearching, loadSearchPage, orderedAssets.length, searchMediaKinds, searchQuery, searchScope, searchView, visibleCount])
 
   const albumTrees = folders
     .map((folder) => buildAlbumTree(
@@ -1094,6 +1167,24 @@ function App() {
     setCollapsedFolderIds((current) => current.includes(key)
       ? current.filter((id) => id !== key)
       : [...current, key])
+  }
+
+  const toggleSearchMediaKind = (kind: MediaKind) => {
+    setSearchView((current) => current?.kind === 'similar' ? null : current)
+    setSearchMediaKinds((current) => {
+      if (current.length === ALL_MEDIA_KINDS.length) return [kind]
+      if (current.length === 1 && current[0] === kind) return ALL_MEDIA_KINDS
+      return current.includes(kind)
+        ? current.filter((value) => value !== kind)
+        : [...current, kind]
+    })
+  }
+
+  const resetSearch = () => {
+    setSearchQuery('')
+    setSearchScope('')
+    setSearchMediaKinds(ALL_MEDIA_KINDS)
+    setSearchView(null)
   }
 
   return (
@@ -1155,7 +1246,7 @@ function App() {
             <div>
               <p className="eyebrow">Local and optional</p>
               <h2 id="ai-manager-title">AI search</h2>
-              <p>Analyze image pixels only when you ask. Images and searches stay on this computer.</p>
+              <p>Analyze first-frame pixels only when you ask. Media and searches stay on this computer.</p>
             </div>
             <span className="ai-state" data-state={semanticStatus?.job.state ?? 'idle'}>
               {semanticStatus?.job.state ?? 'Loading'}
@@ -1195,7 +1286,7 @@ function App() {
               {semanticStatus.job.state === 'running' && (
                 <div className="ai-active-progress" aria-live="polite">
                   <div>
-                    <span>{semanticStatus.job.cancellationPending ? 'Finishing current image' : 'Indexing images'}</span>
+                    <span>{semanticStatus.job.cancellationPending ? 'Finishing current item' : 'Indexing media'}</span>
                     <strong>
                       {semanticStatus.job.total > 0
                         ? Math.round(semanticStatus.job.processed * 100 / semanticStatus.job.total)
@@ -1208,7 +1299,7 @@ function App() {
                     aria-valuemin={0}
                     aria-valuemax={semanticStatus.job.total}
                     aria-valuenow={semanticStatus.job.processed}
-                    aria-valuetext={`${semanticStatus.job.processed} of ${semanticStatus.job.total} images`}
+                    aria-valuetext={`${semanticStatus.job.processed} of ${semanticStatus.job.total} media items`}
                   >
                     <span style={{ width: `${semanticStatus.job.total > 0 ? Math.min(100, semanticStatus.job.processed * 100 / semanticStatus.job.total) : 0}%` }} />
                   </div>
@@ -1285,7 +1376,7 @@ function App() {
                 {semanticStatus.job.currentFile && <code title={semanticStatus.job.currentFile}>{semanticStatus.job.currentFile}</code>}
                 {semanticStatus.job.state === 'running' && (
                   <span>
-                    {semanticStatus.job.processed} of {semanticStatus.job.total} · {semanticStatus.job.imagesPerSecond.toFixed(1)} images/s
+                    {semanticStatus.job.processed} of {semanticStatus.job.total} · {semanticStatus.job.imagesPerSecond.toFixed(1)} items/s
                     {semanticStatus.job.estimatedSecondsRemaining !== null ? ` · about ${semanticStatus.job.estimatedSecondsRemaining}s left` : ''}
                   </span>
                 )}
@@ -1420,10 +1511,10 @@ function App() {
       <section className="intro">
         <div>
           <h2>Your library</h2>
-          <p>Pictures discovered in your registered source folders.</p>
+          <p>Media discovered in your registered source folders.</p>
         </div>
         <span className="asset-count">
-          {assets.length} {assets.length === 1 ? 'picture' : 'pictures'}
+          {assets.length} {assets.length === 1 ? 'media item' : 'media items'}
         </span>
       </section>
 
@@ -1459,8 +1550,58 @@ function App() {
           {libraryView === 'timeline' ? 'View albums' : 'View timeline'}
         </button>
       </div>
+      <div className="search-filters" aria-label="Search filters">
+        <label className="search-scope">
+          <span>Search within</span>
+          <select
+            value={searchScope}
+            onChange={(event) => {
+              setSearchView((current) => current?.kind === 'similar' ? null : current)
+              setSearchScope(event.target.value)
+            }}
+          >
+            <option value="">Every folder</option>
+            {folders.filter((folder) => folder.isAvailable).map((folder) => (
+              <optgroup label={folder.name} key={folder.id}>
+                <option value={`${folder.id}::`}>{folder.name} / root and subfolders</option>
+                {folder.subfolders.map((subfolder) => (
+                  <option value={`${folder.id}::${subfolder.relativePath}`} key={subfolder.relativePath}>
+                    {'\u00a0\u00a0'.repeat(subfolder.relativePath.split('/').length)}↳ {subfolder.name}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <div className="media-filter-group" role="group" aria-label="Media types">
+          <span>Media type</span>
+          <div>
+            <button
+              type="button"
+              className={searchMediaKinds.length === ALL_MEDIA_KINDS.length ? 'active' : ''}
+              aria-pressed={searchMediaKinds.length === ALL_MEDIA_KINDS.length}
+              onClick={() => {
+                setSearchView((current) => current?.kind === 'similar' ? null : current)
+                setSearchMediaKinds(ALL_MEDIA_KINDS)
+              }}
+            >All</button>
+            {([['image', 'Images'], ['animation', 'GIFs'], ['video', 'Videos']] as const).map(([kind, label]) => (
+              <button
+                type="button"
+                className={searchMediaKinds.includes(kind) ? 'active' : ''}
+                aria-pressed={searchMediaKinds.includes(kind)}
+                onClick={() => toggleSearchMediaKind(kind)}
+                key={kind}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {(searchQuery || searchScope || searchMediaKinds.length !== ALL_MEDIA_KINDS.length) && (
+          <button className="reset-filters" type="button" onClick={resetSearch}>Reset search</button>
+        )}
+      </div>
 
-      <section className="upload-panel" aria-label="Upload pictures">
+      <section className="upload-panel" aria-label="Upload media">
         <label className="folder-select">
           <span>Upload into</span>
           <select
@@ -1493,7 +1634,7 @@ function App() {
           id="photo-upload"
           type="file"
           multiple
-          accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,.heic,.heif"
+          accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,video/mp4,video/webm,video/ogg,video/quicktime,.heic,.heif,.m4v,.mov,.ogv"
           disabled={isUploading || !selectedFolderId}
           onChange={(event) => {
             const files = Array.from(event.target.files ?? [])
@@ -1506,8 +1647,8 @@ function App() {
           htmlFor="photo-upload"
         >
           {isUploading
-            ? 'Uploading ' + uploadCount + (uploadCount === 1 ? ' picture...' : ' pictures...')
-            : 'Upload pictures'}
+            ? 'Uploading ' + uploadCount + (uploadCount === 1 ? ' file...' : ' files...')
+            : 'Upload media'}
         </label>
       </section>
 
@@ -1525,8 +1666,8 @@ function App() {
         </div>
       ) : assets.length === 0 ? (
         <div className="empty-state">
-          <strong>No pictures found</strong>
-          <span>Upload pictures or register a folder that already contains some.</span>
+          <strong>No media found</strong>
+          <span>Upload media or register a folder that already contains some.</span>
         </div>
       ) : isSearching && filteredAssets.length === 0 ? (
         <div className="empty-state" aria-live="polite">
@@ -1535,13 +1676,19 @@ function App() {
         </div>
       ) : filteredAssets.length === 0 ? (
         <div className="empty-state">
-          <strong>No matching pictures</strong>
+          <strong>No matching media</strong>
           <span>Try a different filename or description.</span>
-          <button className="secondary-button" type="button" onClick={() => { setSearchQuery(''); setSearchView(null) }}>Clear search</button>
+          <button className="secondary-button" type="button" onClick={resetSearch}>Clear search</button>
         </div>
       ) : (
         <>
-        {libraryView === 'timeline' ? (
+        {searchView ? (
+          <div className="photo-grid search-results-grid">
+            {visibleAssets.map((asset) => (
+              <ProgressivePhoto asset={asset} onOpen={setViewerAsset} key={asset.id} />
+            ))}
+          </div>
+        ) : libraryView === 'timeline' ? (
           <div className="timeline-groups">
             {groupAssetsByMonth(visibleAssets).map(([dateKey, datedAssets]) => (
               <section className="date-group" id={`date-${dateKey}`} key={dateKey}>
@@ -1569,7 +1716,7 @@ function App() {
             ))}
           </div>
         )}
-        {libraryView === 'timeline' && dateRailEntries.length > 1 && (
+        {!searchView && libraryView === 'timeline' && dateRailEntries.length > 1 && (
           <nav className="date-rail" aria-label="Jump to a month">
             <span>Jump to</span>
             <div>
@@ -1588,9 +1735,9 @@ function App() {
         )}
         <div className="load-more-sentinel" ref={loadMoreRef} aria-live="polite">
           {hasMoreAssets ? (
-            <><span className="loading-dot" /> Loading more pictures…</>
+            <><span className="loading-dot" /> Loading more media…</>
           ) : (
-            <span>All {searchView?.total ?? filteredAssets.length} pictures are displayed.</span>
+            <span>All {searchView?.total ?? filteredAssets.length} media items are displayed.</span>
           )}
         </div>
         </>
@@ -1613,12 +1760,12 @@ function App() {
           <div className="confirm-card folder-warning">
             <p className="eyebrow">Destructive folder action</p>
             <h2 id="empty-folder-title">Empty “{folderPendingEmpty.name}”?</h2>
-            <p>Every supported image in this folder and its subfolders will be moved into <code>.gluj-trash</code>. This affects the real files on the host computer.</p>
-            <p className="warning-count">{assets.filter((asset) => asset.folderId === folderPendingEmpty.id).length} pictures are currently scanned.</p>
+            <p>Every supported media file in this folder and its subfolders will be moved into <code>.gluj-trash</code>. This affects the real files on the host computer.</p>
+            <p className="warning-count">{assets.filter((asset) => asset.folderId === folderPendingEmpty.id).length} media items are currently scanned.</p>
             <div className="confirm-actions">
               <button type="button" onClick={() => setFolderPendingEmpty(null)} disabled={isEmptyingFolder}>Cancel</button>
               <button className="destructive-action" type="button" onClick={() => void emptyFolder(folderPendingEmpty)} disabled={isEmptyingFolder}>
-                {isEmptyingFolder ? 'Moving pictures…' : 'Yes, empty folder'}
+                {isEmptyingFolder ? 'Moving media…' : 'Yes, empty folder'}
               </button>
             </div>
           </div>
