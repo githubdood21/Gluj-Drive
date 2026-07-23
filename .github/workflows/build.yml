@@ -1,0 +1,54 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/GlujDrive.Web/package-lock.json
+
+      - name: Restore backend
+        run: dotnet restore GlujDrive.slnx
+
+      - name: Build backend
+        run: dotnet build GlujDrive.slnx --configuration Release --no-restore
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: src/GlujDrive.Web
+
+      - name: Lint frontend
+        run: npm run lint
+        working-directory: src/GlujDrive.Web
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: src/GlujDrive.Web

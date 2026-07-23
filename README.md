@@ -1,8 +1,53 @@
 # Gluj Drive
 
-Gluj Drive is a lightweight personal photo server designed to run directly on a Windows home PC. The backend uses ASP.NET Core and the browser interface uses React with TypeScript.
+<p align="center">
+  <strong>A lightweight, Windows-native media server for the folders you already have.</strong>
+</p>
 
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the product scope and delivery plan.
+<p align="center">
+  <a href="https://github.com/githubdood21/Gluj-Drive/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/githubdood21/Gluj-Drive?include_prereleases&sort=semver"></a>
+  <a href="https://github.com/githubdood21/Gluj-Drive/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/githubdood21/Gluj-Drive/total"></a>
+  <a href="https://github.com/githubdood21/Gluj-Drive/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/githubdood21/Gluj-Drive?style=flat"></a>
+  <a href="https://github.com/githubdood21/Gluj-Drive/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/githubdood21/Gluj-Drive"></a>
+  <a href="LICENSE.txt"><img alt="License" src="https://img.shields.io/github/license/githubdood21/Gluj-Drive"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D4">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-blueviolet">
+</p>
+
+> [!WARNING]
+> **Gluj Drive is a work in progress.** Version 0.1.0 is an early preview, so bugs, crashes, incomplete features, and breaking changes should be expected. Keep independent backups of important media and do not treat the application as your only copy.
+
+## TL;DR
+
+Gluj Drive turns a Windows home PC into a private photo and video library for your LAN or Tailscale network. It indexes media in existing folders without copying or reorganizing the originals, provides a responsive desktop/mobile gallery, supports uploads and streamed video, and offers optional fully local semantic search. The installed edition runs as one self-contained ASP.NET Core application—no Docker, Node.js, cloud account, or rented server is required.
+
+## Preview
+
+### Browse an existing library
+
+![Gluj Drive photo timeline with library controls and date navigation](App-Images-Preview.png)
+
+### Add and manage Windows folders
+
+![Gluj Drive folder management and upload interface](App-Preview.png)
+
+### Use it from a phone
+
+<p align="center">
+  <img src="App-Mobile-Preview.png" alt="Gluj Drive mobile photo gallery and controls" width="360">
+</p>
+
+## Highlights
+
+- Keeps original media in its existing Windows folders instead of importing it into an opaque managed library.
+- Presents nested directories as albums and lets the host include or exclude individual subfolders.
+- Uses staged, viewport-aware previews to keep large libraries practical on desktop and mobile browsers.
+- Streams videos with HTTP range requests and plays animated GIFs in the media viewer.
+- Offers optional local TinyCLIP semantic search that runs only when the owner installs and starts it.
+- Protects remote access with one owner account while keeping filesystem and server administration host-only.
+- Ships as a self-contained Windows installer or a smaller portable archive.
+
+Gluj Drive uses an ASP.NET Core backend and a React/TypeScript browser interface. See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the product scope and delivery plan.
 
 ## Development prerequisites
 
