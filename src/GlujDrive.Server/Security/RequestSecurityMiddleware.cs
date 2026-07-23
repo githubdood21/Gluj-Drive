@@ -41,8 +41,8 @@ public sealed class RequestSecurityMiddleware(RequestDelegate next)
                     Status = StatusCodes.Status401Unauthorized,
                     Title = accounts.IsConfigured ? "Sign in to Gluj Drive." : "Owner setup is required.",
                     Detail = accounts.IsConfigured
-                        ? "This remote connection requires the root account."
-                        : "Open Gluj Drive on the host PC and create the root account first."
+                        ? "This remote connection requires the owner account."
+                        : "Open Gluj Drive on the host PC and create the owner account first."
                 });
                 return;
             }

@@ -89,7 +89,7 @@ public sealed class RootAccountStore
             System.Text.Encoding.UTF8.GetBytes(stamp));
 
     public string GetSecurityStamp() =>
-        _account?.SecurityStamp ?? throw new InvalidOperationException("The root account is not configured.");
+        _account?.SecurityStamp ?? throw new InvalidOperationException("The owner account is not configured.");
 
     public async Task UpdateAsync(string username, string password, CancellationToken cancellationToken)
     {
@@ -99,7 +99,7 @@ public sealed class RootAccountStore
         {
             if (_account is null)
             {
-                throw new InvalidOperationException("The root account has not been created.");
+                throw new InvalidOperationException("The owner account has not been created.");
             }
 
             _account = CreateRecord(username.Trim(), password) with
@@ -124,7 +124,7 @@ public sealed class RootAccountStore
         }
         catch (Exception exception) when (exception is JsonException or IOException)
         {
-            throw new InvalidDataException("The root account file is unreadable.", exception);
+            throw new InvalidDataException("The owner account file is unreadable.", exception);
         }
     }
 

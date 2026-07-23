@@ -10,7 +10,9 @@ public sealed record ServerSettings(
     long MaxBatchUploadBytes,
     double MinimumTextSimilarity,
     double MaximumTextSimilarityDrop,
-    int MaximumSemanticCandidates);
+    int MaximumSemanticCandidates,
+    IReadOnlyList<string>? IpAllowList,
+    IReadOnlyList<string>? IpDenyList);
 
 public sealed class ServerSettingsStore
 {
@@ -32,13 +34,15 @@ public sealed class ServerSettingsStore
         _path = Path.Combine(catalogPath, "server-settings.json");
         _storage = storage;
         _semantic = semantic;
-        _settings = Load() ?? new ServerSettings(
+        _settings = Normalize(Load() ?? new ServerSettings(
             365,
             storage.MaxUploadBytes,
             storage.MaxBatchUploadBytes,
             semantic.MinimumTextSimilarity,
             semantic.MaximumTextSimilarityDrop,
-            semantic.MaximumSemanticCandidates);
+            semantic.MaximumSemanticCandidates,
+            [],
+            []));
         Validate(_settings);
         Apply(_settings);
     }
@@ -47,6 +51,7 @@ public sealed class ServerSettingsStore
 
     public async Task<ServerSettings> UpdateAsync(ServerSettings settings, CancellationToken cancellationToken)
     {
+        settings = Normalize(settings);
         Validate(settings);
         await _gate.WaitAsync(cancellationToken);
         try
@@ -111,6 +116,38 @@ public sealed class ServerSettingsStore
         if (settings.MaximumTextSimilarityDrop is < 0 or > 2)
             throw new ArgumentException("Maximum similarity drop must be between 0 and 2.");
         if (settings.MaximumSemanticCandidates is < 1 or > 1000)
-            throw new ArgumentException("Semantic candidates must be between 1 and 1000.");
+            throw new ArgumentException("Semantic matches must be between 1 and 1000.");
+        ValidateNetworkRules(settings.IpAllowList!, "allow");
+        ValidateNetworkRules(settings.IpDenyList!, "deny");
+    }
+
+    private static ServerSettings Normalize(ServerSettings settings) =>
+        settings with
+        {
+            IpAllowList = NormalizeNetworkRules(settings.IpAllowList),
+            IpDenyList = NormalizeNetworkRules(settings.IpDenyList)
+        };
+
+    private static string[] NormalizeNetworkRules(IReadOnlyList<string>? rules) =>
+        (rules ?? [])
+            .Select(rule => rule?.Trim())
+            .Where(rule => !string.IsNullOrWhiteSpace(rule))
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static void ValidateNetworkRules(IReadOnlyList<string> rules, string listName)
+    {
+        if (rules.Count > 256)
+            throw new ArgumentException($"The IP {listName} list cannot contain more than 256 entries.");
+
+        foreach (var rule in rules)
+        {
+            if (rule.Length > 128 || !IpNetworkRule.TryParse(rule, out _))
+            {
+                throw new ArgumentException(
+                    $"'{rule}' is not a valid IP address or CIDR range in the IP {listName} list.");
+            }
+        }
     }
 }

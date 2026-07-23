@@ -60,6 +60,8 @@
 body {
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
   margin: 0;
   background:
     radial-gradient(circle at 80% 10%, var(--page-glow), transparent 35%),
@@ -67,4 +69,17 @@ body {
   transition:
     color 180ms ease,
     background-color 180ms ease;
+}
+
+@media (max-width: 700px) {
+  body {
+    background: var(--page-background);
+  }
+}
+
+button,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
 }

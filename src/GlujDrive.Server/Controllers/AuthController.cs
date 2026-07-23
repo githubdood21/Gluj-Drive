@@ -33,7 +33,7 @@ public sealed class AuthController(
         {
             if (!await accounts.CreateAsync(request.Username, request.Password, cancellationToken))
             {
-                return Conflict(new ProblemDetails { Title = "The root account is already configured." });
+                return Conflict(new ProblemDetails { Title = "The owner account is already configured." });
             }
             await SignInAsync(accounts.Username!, accounts.GetSecurityStamp());
             return Ok(new AuthStatusResponse(true, false, true, Request.IsHttps, accounts.Username));
@@ -55,7 +55,7 @@ public sealed class AuthController(
             return Conflict(new ProblemDetails
             {
                 Title = "Owner setup is required.",
-                Detail = "Open Gluj Drive on the host PC and create the root account first."
+                Detail = "Open Gluj Drive on the host PC and create the owner account first."
             });
         }
         if (!await accounts.VerifyAsync(request.Username, request.Password, cancellationToken))

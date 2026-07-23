@@ -24,7 +24,7 @@ Start the React development server in another terminal:
 npm.cmd run dev --prefix src/GlujDrive.Web
 ```
 
-Open `http://localhost:5173`. Vite proxies `/api` requests to the loopback-only ASP.NET Core development endpoint.
+Open `http://localhost:5173` on the host PC or `http://HOST-PC-IP:5173` from another device on the LAN. The Vite React development client listens on all IPv4 interfaces and proxies `/api` requests to the loopback-only ASP.NET Core endpoint. The proxy preserves the original client address and browser host so remote development clients still require authentication and cannot use host-only controls.
 
 ### Visual Studio Code
 
@@ -62,9 +62,9 @@ On the host PC, use the site's **Folders** panel to register additional existing
 
 Folder paths and folder-management operations are host-only. Connections from other LAN or VPN devices can choose among folder names when uploading, but cannot see local paths, open the native picker, add or remove folders, empty folders, or change the default. The server enforces this using the connection's loopback address; it is not merely a hidden frontend control.
 
-The default library timeline searches by media name, folder, or relative path and progressively adds metadata cards in batches of 24 as the user scrolls. Items are grouped newest-first by month across the library, with one unified date-rail entry per month. **View albums** switches to a collapsible tree where each registered source is a root and nested filesystem directories become nested albums instead of being flattened into the source. Cards and the viewer show the privacy-safe relative location (`Source / subfolder / file`) without exposing absolute Windows paths remotely. Selecting an image opens the zoomable viewer; animated GIFs play in that viewer, and videos use the browser's native controls.
+The default library timeline searches by media name, folder, or relative path and progressively adds items in batches of 24 as the user scrolls. On wide screens, search, folder/media filters, gallery layout, and Timeline/Albums switching remain in a fixed left-side panel. Narrower screens use a translucent toolbar that follows scrolling; on phones, detailed filters open in an anchored panel so they do not permanently cover the gallery. **Photos** layout is the default and forms compact, justified rows using each loaded preview's aspect ratio and available pixel dimensions. Low-resolution media is capped near its native display size instead of being stretched across a sparse row. **Cards** layout restores equal-sized cards with persistent metadata and actions; the preference is saved in the browser. Items are grouped newest-first by month across the library, with one unified date-rail entry per month. **Albums** switches to a collapsible tree where each registered source is a root and nested filesystem directories become nested albums instead of being flattened into the source. Cards and the viewer show the privacy-safe relative location (`Source / subfolder / file`) without exposing absolute Windows paths remotely. Selecting an image opens the zoomable viewer; animated GIFs play in that viewer, and videos use the browser's native controls.
 
-Gallery cards use a staged derivative pipeline. The initial library response reads only filesystem metadata and any already-cached average RGB color; an unprocessed image uses a neutral fallback without opening its original. A card that remains near the viewport requests a 64-pixel WebP after 150 milliseconds, which also creates its true average-color cache, and promotes to a 640-pixel WebP after 500 milliseconds total. Cards far outside the viewport remove their image source while retaining inexpensive text and color metadata. The original file is requested only when the viewer opens. Generated colors and previews live under the application catalog's `previews` directory and can be rebuilt from originals; generation is limited to two concurrent jobs to protect the host PC during fast scrolling.
+Gallery cards use a staged derivative pipeline. The initial library response reads only filesystem metadata plus any cached average RGB color and pixel dimensions; an unprocessed image uses neutral size/color fallbacks without opening its original. A card that remains near the viewport requests a 64-pixel WebP after 150 milliseconds, which also creates its true visual-metadata cache, and promotes to a 640-pixel WebP after 500 milliseconds total. Legacy preview caches learn dimensions opportunistically from their largest available derivative. Cards far outside the viewport remove their image source while retaining inexpensive text, color, and dimension metadata. The original file is requested only when the viewer opens. Generated metadata and previews live under the application catalog's `previews` directory and can be rebuilt from originals; generation is limited to two concurrent jobs to protect the host PC during fast scrolling.
 
 The catalog admits JPG/JPEG, PNG, WebP, GIF, HEIC, HEIF, MP4, M4V, MOV, WebM, and OGV. This is intentionally not a claim to support every image or video codec. The derivative pipeline uses SixLabors.ImageSharp 3.1.12 under its community/non-commercial license terms. JPEG, PNG, GIF, and WebP derivatives are supported. HEIC/HEIF files retain their color fallback if the decoder cannot process them; originals remain viewable only when the browser supports the format.
 
@@ -94,23 +94,47 @@ When the server runs in the Development environment, interactive API documentati
 
 Swagger is disabled outside Development so the interactive API surface is not exposed by a normal home-server deployment.
 
-## Root account and remote access
+## Owner account and remote access
 
-On first launch, open Gluj Drive directly on the Windows host. The site requires creation of one root account before any remote client can access library APIs. Loopback requests from the host PC deliberately bypass sign-in so the owner cannot lock themselves out; host-only folder, AI, account, and server settings remain unavailable to remote clients even after they authenticate.
+Gluj Drive is provided **as is** as self-hosted software. It does not include a hosted relay, tunnelling service, automatic router configuration, or a guarantee that the server will be reachable outside your home network. The Windows PC running Gluj Drive must remain powered on, connected to the network, and permitted through Windows Firewall for other devices to connect.
 
-Remote authentication uses an HTTP-only, SameSite `Strict` ASP.NET Core cookie. The default persistent session is 365 days and can be shortened from the host-only **Settings** panel. Cookie encryption keys are persisted beneath `data/catalog/auth/keys` and protected with Windows DPAPI, so sessions survive restarts but remain tied to the Windows account running Gluj Drive. Passwords are never stored directly: the account file contains a unique salt and a PBKDF2-HMAC-SHA256 hash using 600,000 iterations. Changing the root account rotates its security stamp and invalidates existing remote sessions.
+During development, the React/Vite client listens on port `5173` across all IPv4 interfaces (`0.0.0.0`), while the ASP.NET server remains on `http://localhost:5199`. Devices on the same LAN can therefore open `http://HOST-PC-IP:5173` once Windows Firewall permits the Vite/Node process.
+
+Vite is a development tool, not the production server. A published build places the compiled React files in ASP.NET's `wwwroot`, so the backend serves both the site and API in production. If a published build must be reachable directly on the LAN, explicitly configure its listening URL—for example `ASPNETCORE_URLS=http://0.0.0.0:5199`—or place it behind a trusted private reverse proxy. That production exposure is intentionally not enabled by default.
+
+The host-only **Settings** panel provides IP allow and deny lists. Each line accepts one IPv4 address, IPv6 address, or CIDR range. An empty allow list permits every address, while a populated allow list accepts only matching addresses; deny rules always take priority. Direct loopback connections remain available even if a rule is entered incorrectly, preventing the owner from locking themselves out. Rules use the peer address seen directly by the server and apply immediately to the site and API.
+
+Direct access from the wider internet will usually require router port forwarding, a stable public address or dynamic DNS, HTTPS, and careful firewall configuration. Port forwarding cannot bypass carrier-grade NAT (CGNAT), double NAT, a restrictive ISP, or another firewall that you do not control. Do not expose an unencrypted HTTP endpoint directly to the public internet.
+
+For most personal installations, the simplest option is to use Gluj Drive with [Tailscale](https://tailscale.com/). Install Tailscale on the host PC and the devices that need access, then connect to Gluj Drive through the host's private Tailscale address or name. This normally avoids public port forwarding and works across many NAT configurations while keeping access inside your private tailnet.
+
+On first launch, open Gluj Drive directly on the Windows host. The site requires creation of one owner account before any remote client can access the library. Loopback requests from the host PC deliberately bypass sign-in so the owner cannot lock themselves out; folder management, semantic-search management, account changes, and server settings remain unavailable to remote clients even after they authenticate.
+
+Remote authentication uses an HTTP-only, SameSite `Strict` ASP.NET Core cookie. The default persistent session is 365 days and can be shortened from **Settings** on the host PC. Cookie encryption keys are persisted beneath `data/catalog/auth/keys` and protected with Windows DPAPI, so sessions survive restarts but remain tied to the Windows account running Gluj Drive. Passwords are never stored directly: the account file contains a unique salt and a PBKDF2-HMAC-SHA256 hash using 600,000 iterations. Changing the owner account rotates its security stamp and invalidates existing remote sessions.
 
 API requests carrying a foreign `Origin` are rejected instead of merely omitting CORS response headers. Unsafe remote requests without a browser origin are also rejected. This same-origin policy is intentionally stricter than ordinary CORS and still permits the loopback Vite development proxy. Authentication is rate-limited to five attempts per remote address per minute.
 
 HTTP authentication does not encrypt traffic. Configure HTTPS or use a trusted private VPN before signing in across an untrusted network; the remote login screen warns when its connection is not HTTPS.
 
-The host-only **Settings** panel manages session lifetime, upload limits, TinyCLIP similarity thresholds, semantic candidate limits, and root-account changes. These overrides are stored in `data/catalog/server-settings.json`. Increased upload limits require a server restart because Kestrel's request-body ceiling is established during startup; other exposed settings apply immediately.
+The **Settings** panel on the host PC manages IP access rules, session lifetime, upload limits, semantic-similarity thresholds, result limits, and owner-account changes. These overrides are stored in `data/catalog/server-settings.json`. Increased upload limits require a server restart because Kestrel's request-body ceiling is established during startup; other exposed settings apply immediately.
+
+## Version and release
+
+The current preview version is **0.1.0**. Backend assembly versions are defined in `Directory.Build.props`, while the frontend version is recorded in its `package.json`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+Create a self-contained Windows release build with:
+
+```powershell
+dotnet publish src/GlujDrive.Server -c Release -r win-x64 --self-contained true
+```
+
+Before publishing a GitHub release, verify the production build on a clean Windows machine, include the required FFmpeg license files and optional semantic-search package licenses, and tag the commit as `v0.1.0`.
 
 ## Optional semantic search
 
 Semantic image search is opt-in. The server does not load a model or inspect image pixels until the host explicitly starts **Analyze library**. Embeddings are stored in `data/catalog/semantic/semantic.db`; the USearch HNSW file is a rebuildable cache.
 
-Published builds can include a verified combined AI package. A non-technical user only needs to open the host-only **AI search** panel and click **Install AI search**. The browser queues a background server worker which copies or downloads the package, verifies its archive and per-file SHA-256 hashes, extracts the TinyCLIP model and Windows native runtime, activates them atomically, and reports each phase in the UI. It does not require administrator access or development tools.
+Published builds can include a verified semantic-search package. To enable it, open **Semantic search** on the host PC and click **Install semantic search**. The browser starts a background task that copies or downloads the package, verifies its archive and per-file SHA-256 hashes, extracts the TinyCLIP search model and Windows search engine, activates them atomically, and reports each phase in the UI. It does not require administrator access or development tools.
 
 To publish a verified TinyCLIP package, build the native runtime described in [`native/GlujDrive.Inference.Native/README.md`](native/GlujDrive.Inference.Native/README.md), then run `tools/semantic/package-ai-release.ps1`. Its default output is copied into published builds automatically. A smaller build may omit the bundled ZIP and use a release download instead:
 
@@ -121,6 +145,6 @@ To publish a verified TinyCLIP package, build the native runtime described in [`
 }
 ```
 
-The installer prefers the bundled package and falls back to the configured download. If neither is available, the install control explains that the build has no AI package; ordinary filename/path search continues to work.
+The installer prefers the bundled package and falls back to the configured download. If neither is available, the install control explains that the build has no semantic-search package; ordinary filename/path search continues to work.
 
-TinyCLIP search values are normalized cosine similarities, not probabilities. Text search averages embeddings for the raw query and `a photo of {query}`, then rejects semantic candidates below `SemanticSearch:MinimumTextSimilarity` or farther than `SemanticSearch:MaximumTextSimilarityDrop` below the strongest in-scope result. `MaximumSemanticCandidates` limits how many accepted semantic neighbors can participate in rank fusion. Exact and ordinary filename/path matches are not removed by these semantic thresholds.
+TinyCLIP search values are normalized cosine similarities, not probabilities. Text search averages embeddings for the raw query and `a photo of {query}`, then rejects semantic results below `SemanticSearch:MinimumTextSimilarity` or farther than `SemanticSearch:MaximumTextSimilarityDrop` below the strongest in-scope result. The `MaximumSemanticCandidates` configuration value limits how many accepted semantic results can participate in rank fusion. Exact and ordinary filename/path matches are not removed by these semantic thresholds.

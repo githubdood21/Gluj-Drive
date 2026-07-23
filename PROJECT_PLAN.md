@@ -152,6 +152,7 @@ The first usable release should provide:
 - Favorites and albums.
 - A recoverable trash workflow.
 - Clear storage, processing, and error status.
+- Optional local semantic search and visually similar-media lookup.
 - LAN-only operation with secure defaults.
 - Self-contained Windows build.
 - Catalog/configuration backup and restore.
@@ -160,7 +161,7 @@ The first usable release should provide:
 
 - Commercial hosting, subscriptions, or project-operated cloud infrastructure
 - Native mobile applications
-- Facial recognition or semantic AI search
+- Facial recognition
 - Video transcoding
 - RAW photo development
 - Photo editing

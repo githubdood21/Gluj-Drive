@@ -15,6 +15,8 @@ type Asset = {
   createdAtUtc: string
   modifiedAtUtc: string
   averageColor: string
+  pixelWidth: number | null
+  pixelHeight: number | null
   viewUrl: string
   downloadUrl: string
   lowPreviewUrl: string
@@ -59,6 +61,8 @@ type ServerSettings = {
   minimumTextSimilarity: number
   maximumTextSimilarityDrop: number
   maximumSemanticCandidates: number
+  ipAllowList: string[]
+  ipDenyList: string[]
 }
 
 type SemanticJobStatus = {
@@ -128,7 +132,9 @@ type ProblemDetails = {
 
 type Theme = 'light' | 'dark'
 type LibraryView = 'timeline' | 'folders'
+type GalleryLayout = 'photos' | 'structured'
 type MediaKind = Asset['mediaKind']
+type PreviewStage = 'color' | 'low' | 'medium' | 'native'
 type AlbumNode = {
   key: string
   name: string
@@ -140,6 +146,191 @@ type AlbumNode = {
 }
 const LOAD_BATCH_SIZE = 24
 const ALL_MEDIA_KINDS: MediaKind[] = ['image', 'animation', 'video']
+const MOBILE_PREVIEW_BATCH_SIZE = 4
+const MOBILE_PREVIEW_BATCH_INTERVAL_MS = 80
+const MOBILE_PREVIEW_LOAD_RADIUS_PX = 3000
+const MOBILE_PREVIEW_RECENTER_DISTANCE_PX = 1500
+const MOBILE_PREVIEW_RECENTER_DELAY_MS = 80
+const MOBILE_PREVIEW_EVICTION_DELAY_MS = 5000
+const mobilePreviewQueue = new Map<string, { ticket: number; apply: () => void }>()
+const mobilePreviewTickets = new Map<string, number>()
+let nextMobilePreviewTicket = 0
+let mobilePreviewBatchTimer: number | undefined
+
+function scheduleMobilePreviewBatch() {
+  if (mobilePreviewBatchTimer !== undefined) return
+
+  mobilePreviewBatchTimer = window.setTimeout(() => {
+    mobilePreviewBatchTimer = undefined
+    const batch = Array.from(mobilePreviewQueue.entries()).slice(0, MOBILE_PREVIEW_BATCH_SIZE)
+    batch.forEach(([assetId]) => mobilePreviewQueue.delete(assetId))
+
+    window.requestAnimationFrame(() => {
+      batch.forEach(([assetId, update]) => {
+        if (mobilePreviewTickets.get(assetId) !== update.ticket) return
+        mobilePreviewTickets.delete(assetId)
+        update.apply()
+      })
+    })
+
+    if (mobilePreviewQueue.size > 0) scheduleMobilePreviewBatch()
+  }, MOBILE_PREVIEW_BATCH_INTERVAL_MS)
+}
+
+function queuePreviewUpdate(assetId: string, isMobile: boolean, apply: () => void) {
+  if (!isMobile) {
+    apply()
+    return
+  }
+
+  const ticket = ++nextMobilePreviewTicket
+  mobilePreviewTickets.set(assetId, ticket)
+  mobilePreviewQueue.set(assetId, { ticket, apply })
+  scheduleMobilePreviewBatch()
+}
+
+function cancelQueuedPreviewUpdate(assetId: string) {
+  mobilePreviewQueue.delete(assetId)
+  mobilePreviewTickets.delete(assetId)
+}
+
+type MobilePreviewWindowSubscriber = {
+  element: HTMLElement
+  insideLoadWindow: boolean | null
+  update: (insideLoadWindow: boolean) => void
+}
+
+const mobilePreviewWindowSubscribers = new Set<MobilePreviewWindowSubscriber>()
+let mobilePreviewWindowAnchor: number | null = null
+let mobilePreviewWindowTimer: number | undefined
+let forceMobilePreviewWindowRefresh = false
+let mobilePreviewWindowListening = false
+
+function currentViewportCenter() {
+  return window.scrollY + window.innerHeight / 2
+}
+
+function updateMobilePreviewSubscriber(
+  subscriber: MobilePreviewWindowSubscriber,
+  anchor: number,
+) {
+  const bounds = subscriber.element.getBoundingClientRect()
+  const documentTop = bounds.top + window.scrollY
+  const documentBottom = bounds.bottom + window.scrollY
+  const insideLoadWindow =
+    documentBottom >= anchor - MOBILE_PREVIEW_LOAD_RADIUS_PX &&
+    documentTop <= anchor + MOBILE_PREVIEW_LOAD_RADIUS_PX
+  if (subscriber.insideLoadWindow === insideLoadWindow) return
+
+  subscriber.insideLoadWindow = insideLoadWindow
+  subscriber.update(insideLoadWindow)
+}
+
+function refreshMobilePreviewWindow() {
+  mobilePreviewWindowTimer = undefined
+  const nextAnchor = currentViewportCenter()
+  if (
+    !forceMobilePreviewWindowRefresh &&
+    mobilePreviewWindowAnchor !== null &&
+    Math.abs(nextAnchor - mobilePreviewWindowAnchor) < MOBILE_PREVIEW_RECENTER_DISTANCE_PX
+  ) {
+    return
+  }
+
+  forceMobilePreviewWindowRefresh = false
+  mobilePreviewWindowAnchor = nextAnchor
+  mobilePreviewWindowSubscribers.forEach((subscriber) =>
+    updateMobilePreviewSubscriber(subscriber, nextAnchor))
+}
+
+function scheduleMobilePreviewWindowRefresh(force = false, immediate = false) {
+  forceMobilePreviewWindowRefresh ||= force
+  if (mobilePreviewWindowTimer !== undefined) {
+    if (!immediate) return
+    window.clearTimeout(mobilePreviewWindowTimer)
+  }
+
+  mobilePreviewWindowTimer = window.setTimeout(
+    refreshMobilePreviewWindow,
+    immediate ? 0 : MOBILE_PREVIEW_RECENTER_DELAY_MS,
+  )
+}
+
+function handleMobilePreviewScroll() {
+  if (
+    mobilePreviewWindowAnchor === null ||
+    Math.abs(currentViewportCenter() - mobilePreviewWindowAnchor) >=
+      MOBILE_PREVIEW_RECENTER_DISTANCE_PX
+  ) {
+    scheduleMobilePreviewWindowRefresh()
+  }
+}
+
+function handleMobilePreviewScrollEnd() {
+  if (
+    mobilePreviewWindowAnchor === null ||
+    Math.abs(currentViewportCenter() - mobilePreviewWindowAnchor) >=
+      MOBILE_PREVIEW_RECENTER_DISTANCE_PX
+  ) {
+    scheduleMobilePreviewWindowRefresh(false, true)
+  }
+}
+
+function startMobilePreviewWindowListeners() {
+  if (mobilePreviewWindowListening) return
+  mobilePreviewWindowListening = true
+  window.addEventListener('scroll', handleMobilePreviewScroll, { passive: true })
+  window.addEventListener('scrollend', handleMobilePreviewScrollEnd)
+  window.addEventListener('resize', handleMobilePreviewScrollEnd)
+}
+
+function stopMobilePreviewWindowListeners() {
+  if (!mobilePreviewWindowListening || mobilePreviewWindowSubscribers.size > 0) return
+  mobilePreviewWindowListening = false
+  window.removeEventListener('scroll', handleMobilePreviewScroll)
+  window.removeEventListener('scrollend', handleMobilePreviewScrollEnd)
+  window.removeEventListener('resize', handleMobilePreviewScrollEnd)
+  if (mobilePreviewWindowTimer !== undefined) {
+    window.clearTimeout(mobilePreviewWindowTimer)
+    mobilePreviewWindowTimer = undefined
+  }
+  mobilePreviewWindowAnchor = null
+  forceMobilePreviewWindowRefresh = false
+}
+
+function subscribeToMobilePreviewWindow(
+  element: HTMLElement,
+  update: (insideLoadWindow: boolean) => void,
+) {
+  const subscriber = { element, insideLoadWindow: null, update }
+  mobilePreviewWindowSubscribers.add(subscriber)
+  startMobilePreviewWindowListeners()
+
+  if (mobilePreviewWindowAnchor === null) {
+    scheduleMobilePreviewWindowRefresh(true)
+  } else {
+    const anchor = mobilePreviewWindowAnchor
+    window.requestAnimationFrame(() => {
+      if (mobilePreviewWindowSubscribers.has(subscriber)) {
+        updateMobilePreviewSubscriber(subscriber, anchor)
+      }
+    })
+  }
+
+  return () => {
+    mobilePreviewWindowSubscribers.delete(subscriber)
+    stopMobilePreviewWindowListeners()
+  }
+}
+
+function parseIpRules(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((rule) => rule.trim())
+    .filter((rule, index, rules) =>
+      rule.length > 0 &&
+      rules.findIndex((candidate) => candidate.toLowerCase() === rule.toLowerCase()) === index)
+}
 
 function parseFolderScope(value: string) {
   if (!value) return { folderId: null, relativePath: null }
@@ -164,6 +355,19 @@ function getInitialTheme(): Theme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
     : 'light'
+}
+
+function getInitialGalleryLayout(): GalleryLayout {
+  try {
+    const savedLayout = window.localStorage.getItem('gluj-drive-gallery-layout')
+    if (savedLayout === 'photos' || savedLayout === 'structured') {
+      return savedLayout
+    }
+  } catch {
+    // The default layout still works when local storage is unavailable.
+  }
+
+  return 'photos'
 }
 
 async function getErrorMessage(response: Response) {
@@ -258,41 +462,87 @@ function countAlbumAssets(node: AlbumNode): number {
   return node.assets.length + node.children.reduce((total, child) => total + countAlbumAssets(child), 0)
 }
 
-function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Asset) => void }) {
-  const [previewStage, setPreviewStage] = useState<'color' | 'low' | 'medium' | 'native'>('color')
+function ProgressivePhoto({
+  asset,
+  layout,
+  onOpen,
+}: {
+  asset: Asset
+  layout: GalleryLayout
+  onOpen: (asset: Asset) => void
+}) {
+  const [previewStage, setPreviewStage] = useState<PreviewStage>('color')
   const cardRef = useRef<HTMLElement>(null)
+  const sourceWidth = asset.pixelWidth && asset.pixelWidth > 0 ? asset.pixelWidth : 0
+  const sourceHeight = asset.pixelHeight && asset.pixelHeight > 0 ? asset.pixelHeight : 0
+  const aspectRatio = sourceWidth > 0 && sourceHeight > 0
+    ? Math.min(6, Math.max(0.25, sourceWidth / sourceHeight))
+    : 4 / 3
 
   useEffect(() => {
     const card = cardRef.current
     if (!card) return
 
+    const isMobile = window.matchMedia('(max-width: 700px)').matches
     let lowTimer: number | undefined
     let mediumTimer: number | undefined
+    let unloadTimer: number | undefined
 
     const clearPromotionTimers = () => {
       if (lowTimer) window.clearTimeout(lowTimer)
       if (mediumTimer) window.clearTimeout(mediumTimer)
     }
 
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        clearPromotionTimers()
+    const clearUnloadTimer = () => {
+      if (unloadTimer) window.clearTimeout(unloadTimer)
+    }
 
-        if (!entry.isIntersecting) {
+    const updatePreviewWindow = (insideLoadWindow: boolean) => {
+      clearPromotionTimers()
+      cancelQueuedPreviewUpdate(asset.id)
+
+      if (!insideLoadWindow) {
+        if (isMobile) {
+          clearUnloadTimer()
+          unloadTimer = window.setTimeout(
+            () => queuePreviewUpdate(asset.id, true, () => setPreviewStage('color')),
+            MOBILE_PREVIEW_EVICTION_DELAY_MS,
+          )
+        } else {
           setPreviewStage('color')
-          return
         }
+        return
+      }
 
-        lowTimer = window.setTimeout(() => setPreviewStage('low'), 150)
-        mediumTimer = window.setTimeout(() => setPreviewStage('medium'), 500)
-      },
-      { rootMargin: '900px 0px', threshold: 0.01 },
-    )
+      clearUnloadTimer()
+      lowTimer = window.setTimeout(
+        () => queuePreviewUpdate(asset.id, isMobile, () => setPreviewStage('low')),
+        isMobile ? 180 : 150,
+      )
+      mediumTimer = window.setTimeout(
+        () => queuePreviewUpdate(asset.id, isMobile, () => setPreviewStage('medium')),
+        isMobile ? 600 : 500,
+      )
+    }
 
-    observer.observe(card)
+    const unsubscribe = isMobile
+      ? subscribeToMobilePreviewWindow(card, updatePreviewWindow)
+      : undefined
+    const observer = isMobile
+      ? undefined
+      : new IntersectionObserver(
+        ([entry]) => updatePreviewWindow(entry.isIntersecting),
+        { rootMargin: '900px 0px', threshold: 0.01 },
+      )
+
+    observer?.observe(card)
+
     return () => {
       clearPromotionTimers()
-      observer.disconnect()
+      clearUnloadTimer()
+      cancelQueuedPreviewUpdate(asset.id)
+      unsubscribe?.()
+      observer?.disconnect()
     }
   }, [asset.id])
 
@@ -306,8 +556,26 @@ function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Ass
     setPreviewStage(asset.mediaKind === 'video' ? 'native' : 'color')
   }
 
+  const pixelDensity = Math.min(2, Math.max(1, window.devicePixelRatio || 1))
+  const displayWidth = sourceWidth > 0 ? sourceWidth / pixelDensity : 720
+  const displayHeight = sourceHeight > 0 ? sourceHeight / pixelDensity : 220
+  const basisForHeight = (targetHeight: number) =>
+    `${aspectRatio * Math.min(targetHeight, displayHeight)}px`
+
   return (
-    <article className="photo-card" ref={cardRef} style={{ '--average-color': asset.averageColor } as CSSProperties}>
+    <article
+      className="photo-card"
+      data-layout={layout}
+      ref={cardRef}
+      style={{
+        '--average-color': asset.averageColor,
+        '--asset-ratio': aspectRatio,
+        '--asset-basis': basisForHeight(220),
+        '--asset-mobile-basis': basisForHeight(145),
+        '--asset-phone-basis': basisForHeight(112),
+        '--asset-max-width': `${Math.max(56, displayWidth)}px`,
+      } as CSSProperties}
+    >
       <button className="photo-link" type="button" onClick={() => onOpen(asset)} aria-label={'View ' + asset.fileName}>
         {previewUrl && previewStage !== 'native' && (
           <img
@@ -316,10 +584,18 @@ function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Ass
             loading="lazy"
             decoding="async"
             onError={handlePreviewError}
+            width={sourceWidth || undefined}
+            height={sourceHeight || undefined}
           />
         )}
         {previewStage === 'native' && asset.mediaKind === 'video' && (
-          <video src={asset.viewUrl} muted playsInline preload="metadata" aria-label={asset.fileName} />
+          <video
+            src={asset.viewUrl}
+            muted
+            playsInline
+            preload="metadata"
+            aria-label={asset.fileName}
+          />
         )}
         <span className="media-badges">
           <span>{asset.fileExtension}</span>
@@ -328,7 +604,7 @@ function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Ass
           )}
         </span>
         {asset.matchConfidence !== null && asset.matchConfidence !== undefined && (
-          <span className="match-confidence" title="Raw TinyCLIP cosine similarity, not a probability">
+          <span className="match-confidence" title="Semantic similarity score, not a probability">
             {Math.round(asset.matchConfidence * 100)}% similarity
           </span>
         )}
@@ -348,10 +624,31 @@ function ProgressivePhoto({ asset, onOpen }: { asset: Asset; onOpen: (asset: Ass
   )
 }
 
+function PhotoGallery({
+  assets,
+  layout,
+  onOpen,
+  className = '',
+}: {
+  assets: Asset[]
+  layout: GalleryLayout
+  onOpen: (asset: Asset) => void
+  className?: string
+}) {
+  return (
+    <div className={`photo-grid${layout === 'photos' ? ' photo-grid-justified' : ''}${className ? ` ${className}` : ''}`}>
+      {assets.map((asset) => (
+        <ProgressivePhoto asset={asset} layout={layout} onOpen={onOpen} key={asset.id} />
+      ))}
+    </div>
+  )
+}
+
 function AlbumSection({
   node,
   collapsedKeys,
   isHostConnection,
+  galleryLayout,
   onToggle,
   onOpen,
   onEmpty,
@@ -359,6 +656,7 @@ function AlbumSection({
   node: AlbumNode
   collapsedKeys: string[]
   isHostConnection: boolean
+  galleryLayout: GalleryLayout
   onToggle: (key: string) => void
   onOpen: (asset: Asset) => void
   onEmpty: (folder: SourceFolder) => void
@@ -389,9 +687,7 @@ function AlbumSection({
           {groupAssetsByMonth(node.assets).map(([dateKey, datedAssets]) => (
             <section className="date-group" key={dateKey}>
               <h3>{formatMonth(datedAssets[0].modifiedAtUtc)}</h3>
-              <div className="photo-grid">
-                {datedAssets.map((asset) => <ProgressivePhoto asset={asset} onOpen={onOpen} key={asset.id} />)}
-              </div>
+              <PhotoGallery assets={datedAssets} layout={galleryLayout} onOpen={onOpen} />
             </section>
           ))}
           {node.children.map((child) => (
@@ -399,6 +695,7 @@ function AlbumSection({
               node={child}
               collapsedKeys={collapsedKeys}
               isHostConnection={isHostConnection}
+              galleryLayout={galleryLayout}
               onToggle={onToggle}
               onOpen={onOpen}
               onEmpty={onEmpty}
@@ -435,6 +732,9 @@ function ImageViewer({
   const scaleRef = useRef(1)
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const lastPinchDistance = useRef<number | null>(null)
+  const gestureStart = useRef<{ x: number; y: number; startedAt: number; pointerType: string } | null>(null)
+  const gestureUsedPinch = useRef(false)
+  const suppressBackdropClick = useRef(false)
   const currentIndex = assets.findIndex((candidate) => candidate.id === asset.id)
 
   const resetView = useCallback(() => {
@@ -481,6 +781,15 @@ function ImageViewer({
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId)
+    if (pointers.current.size === 0) {
+      gestureStart.current = {
+        x: event.clientX,
+        y: event.clientY,
+        startedAt: performance.now(),
+        pointerType: event.pointerType,
+      }
+      gestureUsedPinch.current = false
+    }
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
   }
 
@@ -492,6 +801,7 @@ function ImageViewer({
     const activePointers = [...pointers.current.values()]
 
     if (activePointers.length === 2) {
+      gestureUsedPinch.current = true
       const distance = Math.hypot(
         activePointers[0].x - activePointers[1].x,
         activePointers[0].y - activePointers[1].y,
@@ -509,8 +819,32 @@ function ImageViewer({
   }
 
   const handlePointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const wasOnlyPointer = pointers.current.size === 1
     pointers.current.delete(event.pointerId)
     lastPinchDistance.current = null
+
+    const start = gestureStart.current
+    if (
+      wasOnlyPointer &&
+      start &&
+      event.type === 'pointerup' &&
+      start.pointerType !== 'mouse' &&
+      !gestureUsedPinch.current &&
+      scaleRef.current === 1 &&
+      performance.now() - start.startedAt < 700
+    ) {
+      const horizontalTravel = event.clientX - start.x
+      const verticalTravel = event.clientY - start.y
+      if (Math.abs(horizontalTravel) >= 64 && Math.abs(horizontalTravel) > Math.abs(verticalTravel) * 1.25) {
+        suppressBackdropClick.current = true
+        moveTo(horizontalTravel > 0 ? currentIndex - 1 : currentIndex + 1)
+      }
+    }
+
+    if (pointers.current.size === 0) {
+      gestureStart.current = null
+      gestureUsedPinch.current = false
+    }
   }
 
   const deleteAsset = async () => {
@@ -529,7 +863,7 @@ function ImageViewer({
           <strong>{asset.fileName}</strong>
           <span>{currentIndex + 1} of {assets.length}</span>
           {asset.matchConfidence !== null && asset.matchConfidence !== undefined && (
-            <span title="Raw TinyCLIP cosine similarity, not a probability">
+            <span title="Semantic similarity score, not a probability">
               {Math.round(asset.matchConfidence * 100)}% semantic similarity
             </span>
           )}
@@ -546,7 +880,7 @@ function ImageViewer({
           <a href={asset.downloadUrl}>Download</a>
           <button type="button" onClick={() => void onFindSimilar(asset)} disabled={!canFindSimilar}>Find similar</button>
           <button className="viewer-delete" type="button" onClick={() => setConfirmDelete(true)}>Delete</button>
-          <button type="button" onClick={onClose} aria-label="Close viewer">Close</button>
+          <button className="viewer-close" type="button" onClick={onClose} aria-label="Close viewer">Close</button>
         </div>
       </div>
 
@@ -560,6 +894,10 @@ function ImageViewer({
       <div
         className={`viewer-stage${asset.mediaKind === 'video' ? ' viewer-stage-video' : ''}`}
         onClick={(event) => {
+          if (suppressBackdropClick.current) {
+            suppressBackdropClick.current = false
+            return
+          }
           if (event.target === event.currentTarget) {
             onClose()
           }
@@ -636,6 +974,8 @@ function LibraryApp({
   const [showAiManager, setShowAiManager] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [serverSettings, setServerSettings] = useState<ServerSettings | null>(null)
+  const [ipAllowListText, setIpAllowListText] = useState('')
+  const [ipDenyListText, setIpDenyListText] = useState('')
   const [isSavingSettings, setIsSavingSettings] = useState(false)
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null)
   const [accountName, setAccountName] = useState(authStatus.username ?? 'root')
@@ -650,6 +990,8 @@ function LibraryApp({
   const [error, setError] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [libraryView, setLibraryView] = useState<LibraryView>('timeline')
+  const [galleryLayout, setGalleryLayout] = useState<GalleryLayout>(getInitialGalleryLayout)
+  const [showLibraryFilters, setShowLibraryFilters] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchScope, setSearchScope] = useState('')
   const [searchMediaKinds, setSearchMediaKinds] = useState<MediaKind[]>(ALL_MEDIA_KINDS)
@@ -662,6 +1004,7 @@ function LibraryApp({
   const [isEmptyingFolder, setIsEmptyingFolder] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const loadMoreRef = useRef<HTMLDivElement>(null)
+  const libraryControlRef = useRef<HTMLElement>(null)
   const searchRequestRef = useRef(0)
 
   useLayoutEffect(() => {
@@ -673,6 +1016,34 @@ function LibraryApp({
       // The selected theme still applies for the current session.
     }
   }, [theme])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('gluj-drive-gallery-layout', galleryLayout)
+    } catch {
+      // The selected layout still applies for the current session.
+    }
+  }, [galleryLayout])
+
+  useEffect(() => {
+    if (!showLibraryFilters) return
+
+    const closeWhenOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !libraryControlRef.current?.contains(event.target)) {
+        setShowLibraryFilters(false)
+      }
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowLibraryFilters(false)
+    }
+
+    document.addEventListener('pointerdown', closeWhenOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeWhenOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showLibraryFilters])
 
   const loadLibrary = useCallback(async (signal?: AbortSignal) => {
     setIsLoading(true)
@@ -759,7 +1130,7 @@ function LibraryApp({
     const controller = new AbortController()
     void loadAiStatus(controller.signal).catch((caughtError: unknown) => {
       if (!(caughtError instanceof DOMException && caughtError.name === 'AbortError')) {
-        setError(caughtError instanceof Error ? caughtError.message : 'Could not load AI search status.')
+        setError(caughtError instanceof Error ? caughtError.message : 'Could not load semantic search status.')
       }
     })
     const timer = window.setInterval(() => {
@@ -777,7 +1148,10 @@ function LibraryApp({
     void fetch('/api/settings', { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(await getErrorMessage(response))
-        setServerSettings((await response.json()) as ServerSettings)
+        const loadedSettings = (await response.json()) as ServerSettings
+        setServerSettings(loadedSettings)
+        setIpAllowListText(loadedSettings.ipAllowList.join('\n'))
+        setIpDenyListText(loadedSettings.ipDenyList.join('\n'))
       })
       .catch((caughtError: unknown) => {
         if (!(caughtError instanceof DOMException && caughtError.name === 'AbortError')) {
@@ -793,14 +1167,21 @@ function LibraryApp({
     setIsSavingSettings(true)
     setSettingsNotice(null)
     try {
+      const requestedSettings = {
+        ...serverSettings,
+        ipAllowList: parseIpRules(ipAllowListText),
+        ipDenyList: parseIpRules(ipDenyListText),
+      }
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(serverSettings),
+        body: JSON.stringify(requestedSettings),
       })
       if (!response.ok) throw new Error(await getErrorMessage(response))
       const result = (await response.json()) as { settings: ServerSettings; restartRequired: boolean }
       setServerSettings(result.settings)
+      setIpAllowListText(result.settings.ipAllowList.join('\n'))
+      setIpDenyListText(result.settings.ipDenyList.join('\n'))
       setSettingsNotice(result.restartRequired
         ? 'Saved. Restart the server before using the increased upload limit.'
         : 'Server settings saved.')
@@ -830,9 +1211,9 @@ function LibraryApp({
       onAuthStatusChange(status)
       setNewAccountPassword('')
       setConfirmAccountPassword('')
-      setSettingsNotice('Root account updated. Existing remote sessions were signed out.')
+      setSettingsNotice('Owner account updated. Existing remote sessions were signed out.')
     } catch (caughtError: unknown) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Could not update the root account.')
+      setError(caughtError instanceof Error ? caughtError.message : 'Could not update the owner account.')
     } finally {
       setIsSavingSettings(false)
     }
@@ -851,7 +1232,7 @@ function LibraryApp({
       if (!response.ok) throw new Error(await getErrorMessage(response))
       await loadAiStatus()
     } catch (caughtError: unknown) {
-      setError(caughtError instanceof Error ? caughtError.message : 'The AI search operation failed.')
+      setError(caughtError instanceof Error ? caughtError.message : 'The semantic search operation failed.')
     } finally {
       setIsAiActionPending(false)
     }
@@ -1233,6 +1614,9 @@ function LibraryApp({
     const hasActiveFilters = Boolean(searchScope) || searchMediaKinds.length !== ALL_MEDIA_KINDS.length
     return searchQuery.trim() || hasActiveFilters ? [] : assets
   }, [assets, searchMediaKinds.length, searchQuery, searchScope, searchView])
+  const activeFilterCount =
+    (searchScope ? 1 : 0) +
+    (searchMediaKinds.length === ALL_MEDIA_KINDS.length ? 0 : 1)
 
   const orderedAssets = useMemo(() => {
     if (searchView) {
@@ -1369,7 +1753,7 @@ function LibraryApp({
               onClick={() => setShowAiManager((current) => !current)}
               aria-expanded={showAiManager}
             >
-              AI search
+              Semantic search
             </button>
           )}
 
@@ -1405,9 +1789,9 @@ function LibraryApp({
         <section className="settings-manager" aria-labelledby="settings-title">
           <div className="settings-heading">
             <div>
-              <p className="eyebrow">Host-only configuration</p>
+              <p className="eyebrow">Available on this PC</p>
               <h2 id="settings-title">Server settings</h2>
-              <p>Manage remote access, uploads, and semantic matching without editing JSON files.</p>
+              <p>Manage remote access, uploads, and search behavior without editing configuration files.</p>
             </div>
             {settingsNotice && <span className="settings-notice">{settingsNotice}</span>}
           </div>
@@ -1417,9 +1801,31 @@ function LibraryApp({
           ) : (
             <div className="settings-grid">
               <form className="settings-card" onSubmit={(event) => void saveServerSettings(event)}>
-                <h3>Server behavior</h3>
+                <h3>Server preferences</h3>
                 <p>Changes are stored in the application catalog and survive upgrades.</p>
                 <div className="settings-fields">
+                  <label className="full-width-field">
+                    <span>IP allow list</span>
+                    <textarea
+                      rows={4}
+                      value={ipAllowListText}
+                      placeholder={'Leave empty to allow all addresses\nor enter one IP/CIDR per line'}
+                      spellCheck={false}
+                      onChange={(event) => setIpAllowListText(event.target.value)}
+                    />
+                    <small>When populated, only matching remote addresses can connect. Loopback always remains available.</small>
+                  </label>
+                  <label className="full-width-field">
+                    <span>IP deny list</span>
+                    <textarea
+                      rows={4}
+                      value={ipDenyListText}
+                      placeholder={'One IP or CIDR per line\nExample: 192.168.1.50'}
+                      spellCheck={false}
+                      onChange={(event) => setIpDenyListText(event.target.value)}
+                    />
+                    <small>Deny rules take priority over the allow list. Both IPv4 and IPv6 CIDR ranges are supported.</small>
+                  </label>
                   <label>
                     <span>Keep remote devices signed in</span>
                     <div className="number-with-unit">
@@ -1458,7 +1864,7 @@ function LibraryApp({
                     </div>
                   </label>
                   <label>
-                    <span>Minimum TinyCLIP similarity</span>
+                    <span>Minimum semantic similarity</span>
                     <input
                       type="number"
                       min="-1"
@@ -1469,7 +1875,7 @@ function LibraryApp({
                     />
                   </label>
                   <label>
-                    <span>Maximum drop from best match</span>
+                    <span>Allowed drop from best match</span>
                     <input
                       type="number"
                       min="0"
@@ -1480,7 +1886,7 @@ function LibraryApp({
                     />
                   </label>
                   <label>
-                    <span>Maximum semantic candidates</span>
+                    <span>Maximum semantic matches</span>
                     <input
                       type="number"
                       min="1"
@@ -1496,7 +1902,7 @@ function LibraryApp({
               </form>
 
               <form className="settings-card" onSubmit={(event) => void updateRootAccount(event)}>
-                <h3>Root account</h3>
+                <h3>Owner account</h3>
                 <p>Changing this account invalidates every existing remote login.</p>
                 <div className="settings-fields single-column">
                   <label>
@@ -1513,7 +1919,7 @@ function LibraryApp({
                   </label>
                 </div>
                 <button className="secondary-button" type="submit" disabled={isSavingSettings}>
-                  {isSavingSettings ? 'Updating...' : 'Update root account'}
+                  {isSavingSettings ? 'Updating...' : 'Update owner account'}
                 </button>
               </form>
             </div>
@@ -1526,7 +1932,7 @@ function LibraryApp({
           <div className="ai-manager-heading">
             <div>
               <p className="eyebrow">Local and optional</p>
-              <h2 id="ai-manager-title">AI search</h2>
+              <h2 id="ai-manager-title">Semantic search</h2>
               <p>Analyze first-frame pixels only when you ask. Media and searches stay on this computer.</p>
             </div>
             <span className="ai-state" data-state={semanticStatus?.job.state ?? 'idle'}>
@@ -1535,17 +1941,17 @@ function LibraryApp({
           </div>
 
           {!semanticStatus ? (
-            <div className="ai-loading"><span className="loading-dot" /> Loading AI status...</div>
+            <div className="ai-loading"><span className="loading-dot" /> Loading search status...</div>
           ) : (
             <>
               <div className="ai-stats">
-                <div><strong>{semanticStatus.indexed}</strong><span>Indexed</span></div>
+                <div><strong>{semanticStatus.indexed}</strong><span>Analyzed</span></div>
                 <div><strong>{semanticStatus.remaining}</strong><span>Remaining</span></div>
-                <div><strong>{semanticStatus.stale}</strong><span>Stale</span></div>
+                <div><strong>{semanticStatus.stale}</strong><span>Outdated</span></div>
                 <div><strong>{semanticStatus.failed}</strong><span>Failed</span></div>
               </div>
 
-              <div className="ai-progress" aria-label={`${semanticStatus.coveragePercent.toFixed(1)}% indexed`}>
+              <div className="ai-progress" aria-label={`${semanticStatus.coveragePercent.toFixed(1)}% analyzed`}>
                 <span style={{ width: `${Math.min(100, semanticStatus.coveragePercent)}%` }} />
               </div>
 
@@ -1567,7 +1973,7 @@ function LibraryApp({
               {semanticStatus.job.state === 'running' && (
                 <div className="ai-active-progress" aria-live="polite">
                   <div>
-                    <span>{semanticStatus.job.cancellationPending ? 'Finishing current item' : 'Indexing media'}</span>
+                    <span>{semanticStatus.job.cancellationPending ? 'Finishing current item' : 'Analyzing library'}</span>
                     <strong>
                       {semanticStatus.job.total > 0
                         ? Math.round(semanticStatus.job.processed * 100 / semanticStatus.job.total)
@@ -1589,7 +1995,7 @@ function LibraryApp({
 
               <div className="ai-controls">
                 <label className="folder-select">
-                  <span>Compute device</span>
+                  <span>Processing device</span>
                   <select
                     value={semanticStatus.computeSelection}
                     disabled={isAiActionPending || semanticStatus.job.state === 'running'}
@@ -1610,13 +2016,13 @@ function LibraryApp({
                     type="button"
                     disabled={isAiActionPending || !semanticStatus.modelInstallAvailable || semanticStatus.installState === 'installing'}
                     onClick={() => void runAiAction('/api/ai/install', { method: 'POST' })}
-                    title={semanticStatus.modelInstallAvailable ? undefined : 'This build does not include an AI package and has no release download configured.'}
+                    title={semanticStatus.modelInstallAvailable ? undefined : 'This build does not include a semantic-search package and has no release download configured.'}
                   >
                     {semanticStatus.installState === 'installing'
                       ? 'Installing...'
                       : semanticStatus.modelInstalled
-                        ? 'Repair AI search'
-                        : 'Install AI search'}
+                        ? 'Repair semantic search'
+                        : 'Install semantic search'}
                   </button>
                 )}
 
@@ -1645,15 +2051,15 @@ function LibraryApp({
                       disabled={isAiActionPending || !semanticStatus.modelInstalled || !semanticStatus.runtimeAvailable}
                       onClick={() => void startAnalysis(true)}
                     >
-                      Reanalyze all
+                      Analyze everything again
                     </button>
                   </>
                 )}
               </div>
 
               <div className="ai-detail">
-                <span>{semanticStatus.modelInstalled ? `${semanticStatus.modelId} ${semanticStatus.modelVersion ?? ''}` : 'Model not installed'}</span>
-                <span>{semanticStatus.activeDevice ?? (semanticStatus.runtimeAvailable ? 'Runtime ready' : 'Native runtime not installed')}</span>
+                <span>{semanticStatus.modelInstalled ? `${semanticStatus.modelId} ${semanticStatus.modelVersion ?? ''}` : 'Search model not installed'}</span>
+                <span>{semanticStatus.activeDevice ?? (semanticStatus.runtimeAvailable ? 'Search engine ready' : 'Search engine not installed')}</span>
                 {semanticStatus.job.currentFile && <code title={semanticStatus.job.currentFile}>{semanticStatus.job.currentFile}</code>}
                 {semanticStatus.job.state === 'running' && (
                   <span>
@@ -1674,7 +2080,7 @@ function LibraryApp({
         <section className="folder-manager" aria-labelledby="folder-manager-title">
           <div className="folder-manager-heading">
             <div>
-              <h2 id="folder-manager-title">Source folders</h2>
+              <h2 id="folder-manager-title">Library folders</h2>
               <p>Existing images stay in place. Removing a folder only stops scanning it.</p>
             </div>
           </div>
@@ -1810,13 +2216,15 @@ function LibraryApp({
       <section className="intro">
         <div>
           <h2>Your library</h2>
-          <p>Media discovered in your registered source folders.</p>
+          <p>Media discovered in your library folders.</p>
         </div>
         <span className="asset-count">
           {assets.length} {assets.length === 1 ? 'media item' : 'media items'}
         </span>
       </section>
 
+      <nav className="library-control-bar" ref={libraryControlRef} aria-label="Library display controls">
+      <span className="library-control-title">Library controls</span>
       <div className="library-tools">
         <label className="search-field" htmlFor="library-search">
           <span aria-hidden="true">⌕</span>
@@ -1841,15 +2249,49 @@ function LibraryApp({
               ? `${searchView.label} · ${searchView.total} results`
               : `${assets.length} total`}
         </span>
+        <div className="gallery-layout-toggle" role="group" aria-label="Gallery layout">
+          <button
+            type="button"
+            className={galleryLayout === 'photos' ? 'active' : ''}
+            aria-pressed={galleryLayout === 'photos'}
+            title="Fill rows using each media item's aspect ratio"
+            onClick={() => setGalleryLayout('photos')}
+          >
+            Photos
+          </button>
+          <button
+            type="button"
+            className={galleryLayout === 'structured' ? 'active' : ''}
+            aria-pressed={galleryLayout === 'structured'}
+            title="Use equal cards with file details and actions"
+            onClick={() => setGalleryLayout('structured')}
+          >
+            Cards
+          </button>
+        </div>
         <button
           className="secondary-button view-toggle"
           type="button"
           onClick={() => setLibraryView((current) => current === 'timeline' ? 'folders' : 'timeline')}
         >
-          {libraryView === 'timeline' ? 'View albums' : 'View timeline'}
+          {libraryView === 'timeline' ? 'Albums' : 'Timeline'}
+        </button>
+        <button
+          className="secondary-button mobile-filter-toggle"
+          type="button"
+          aria-expanded={showLibraryFilters}
+          aria-controls="library-search-filters"
+          onClick={() => setShowLibraryFilters((current) => !current)}
+        >
+          Filters
+          {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
         </button>
       </div>
-      <div className="search-filters" aria-label="Search filters">
+      <div
+        id="library-search-filters"
+        className={`search-filters${showLibraryFilters ? ' mobile-open' : ''}`}
+        aria-label="Search filters"
+      >
         <label className="search-scope">
           <span>Search within</span>
           <select
@@ -1894,11 +2336,21 @@ function LibraryApp({
               >{label}</button>
             ))}
           </div>
-        </div>
-        {(searchQuery || searchScope || searchMediaKinds.length !== ALL_MEDIA_KINDS.length) && (
-          <button className="reset-filters" type="button" onClick={resetSearch}>Reset search</button>
-        )}
+          </div>
+          {(searchQuery || searchScope || searchMediaKinds.length !== ALL_MEDIA_KINDS.length) && (
+            <button
+              className="reset-filters"
+              type="button"
+              onClick={() => {
+                resetSearch()
+                setShowLibraryFilters(false)
+              }}
+            >
+              Reset search
+            </button>
+          )}
       </div>
+      </nav>
 
       <section className="upload-panel" aria-label="Upload media">
         <label className="folder-select">
@@ -1961,7 +2413,7 @@ function LibraryApp({
       {isLoading && assets.length === 0 ? (
         <div className="empty-state" aria-live="polite">
           <span className="loading-dot" />
-          Scanning your source folders...
+          Scanning your library folders...
         </div>
       ) : assets.length === 0 ? (
         <div className="empty-state">
@@ -1982,21 +2434,18 @@ function LibraryApp({
       ) : (
         <>
         {searchView ? (
-          <div className="photo-grid search-results-grid">
-            {visibleAssets.map((asset) => (
-              <ProgressivePhoto asset={asset} onOpen={setViewerAsset} key={asset.id} />
-            ))}
-          </div>
+          <PhotoGallery
+            assets={visibleAssets}
+            layout={galleryLayout}
+            onOpen={setViewerAsset}
+            className="search-results-grid"
+          />
         ) : libraryView === 'timeline' ? (
           <div className="timeline-groups">
             {groupAssetsByMonth(visibleAssets).map(([dateKey, datedAssets]) => (
               <section className="date-group" id={`date-${dateKey}`} key={dateKey}>
                 <h3>{formatMonth(datedAssets[0].modifiedAtUtc)}</h3>
-                <div className="photo-grid">
-                  {datedAssets.map((asset) => (
-                    <ProgressivePhoto asset={asset} onOpen={setViewerAsset} key={asset.id} />
-                  ))}
-                </div>
+                <PhotoGallery assets={datedAssets} layout={galleryLayout} onOpen={setViewerAsset} />
               </section>
             ))}
           </div>
@@ -2007,6 +2456,7 @@ function LibraryApp({
                 node={tree}
                 collapsedKeys={collapsedFolderIds}
                 isHostConnection={capabilities?.isHostConnection ?? false}
+                galleryLayout={galleryLayout}
                 onToggle={toggleFolder}
                 onOpen={setViewerAsset}
                 onEmpty={setFolderPendingEmpty}
@@ -2147,7 +2597,7 @@ function App() {
           <p className="eyebrow">Owner setup required</p>
           <h1>Gluj Drive</h1>
           <h2>Finish setup on the host PC</h2>
-          <p>The media library remains locked until its owner opens this page directly on the Windows computer and creates the root account.</p>
+          <p>The media library remains locked until its owner opens this page directly on the Windows computer and creates the owner account.</p>
         </section>
       </main>
     )
@@ -2160,10 +2610,10 @@ function App() {
         <form className="auth-card" onSubmit={(event) => void submitCredentials(event)}>
           <p className="eyebrow">{isSetup ? 'First launch' : 'Private media library'}</p>
           <h1>Gluj Drive</h1>
-          <h2>{isSetup ? 'Create the root account' : 'Sign in'}</h2>
+          <h2>{isSetup ? 'Create the owner account' : 'Sign in'}</h2>
           <p>{isSetup
             ? 'This single account protects every connection from another computer or phone. Local access on this PC can always bypass sign-in.'
-            : 'Use the root account created on the host computer.'}</p>
+            : 'Use the owner account created on the host computer.'}</p>
           <label>
             <span>Account name</span>
             <input value={username} minLength={3} maxLength={64} autoComplete="username" onChange={(event) => setUsername(event.target.value)} required autoFocus />

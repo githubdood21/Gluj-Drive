@@ -4,6 +4,7 @@ using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using System.Text.Json;
 using SharpImage = SixLabors.ImageSharp.Image;
 using SharpSize = SixLabors.ImageSharp.Size;
 
@@ -12,9 +13,11 @@ namespace GlujDrive.Infrastructure.Storage;
 public sealed class CachedAssetVisualService : IAssetVisualService
 {
     private const string FallbackColor = "#34303A";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly IAssetStorage _assetStorage;
     private readonly string _cachePath;
     private readonly FfmpegVideoFrameExtractor _videoFrameExtractor;
+    private readonly SemaphoreSlim _metadataGate = new(1, 1);
     private readonly SemaphoreSlim _processingSlots = new(2, 2);
 
     public CachedAssetVisualService(
@@ -35,7 +38,30 @@ public sealed class CachedAssetVisualService : IAssetVisualService
         AssetFile asset,
         CancellationToken cancellationToken = default)
     {
+        var metadataPath = GetCacheFilePath(asset, "metadata", "json");
         var colorPath = GetCacheFilePath(asset, "color", "txt");
+
+        if (File.Exists(metadataPath))
+        {
+            try
+            {
+                var cached = JsonSerializer.Deserialize<CachedVisualMetadata>(
+                    await File.ReadAllTextAsync(metadataPath, CancellationToken.None),
+                    JsonOptions);
+                if (cached is not null)
+                {
+                    return new AssetVisualMetadata(
+                        cached.AverageColor,
+                        cached.PixelWidth,
+                        cached.PixelHeight);
+                }
+            }
+            catch (Exception exception) when (exception is JsonException or IOException)
+            {
+                // A derivative metadata file is rebuildable. Fall back to the
+                // legacy color cache instead of failing the library listing.
+            }
+        }
 
         if (File.Exists(colorPath))
         {
@@ -94,6 +120,8 @@ public sealed class CachedAssetVisualService : IAssetVisualService
             }
         }
 
+        await UpdateMetadataFromPreviewAsync(asset, cachePath);
+
         var content = new FileStream(
             cachePath,
             FileMode.Open,
@@ -136,6 +164,8 @@ public sealed class CachedAssetVisualService : IAssetVisualService
             }
 
             var content = extractedFrame ?? originalContent;
+            var identified = await SharpImage.IdentifyAsync(content, cancellationToken);
+            content.Position = 0;
             using var image = await SharpImage.LoadAsync<Rgba32>(
                 new DecoderOptions
                 {
@@ -156,8 +186,11 @@ public sealed class CachedAssetVisualService : IAssetVisualService
                 }));
 
             var colorPath = GetCacheFilePath(asset, "color", "txt");
+            var averageColor = File.Exists(colorPath)
+                ? await File.ReadAllTextAsync(colorPath, CancellationToken.None)
+                : null;
 
-            if (!File.Exists(colorPath))
+            if (averageColor is null)
             {
                 using var colorSample = image.Clone(context => context.Resize(new ResizeOptions
                 {
@@ -171,11 +204,23 @@ public sealed class CachedAssetVisualService : IAssetVisualService
                 var red = (byte)Math.Round(pixel.R * alpha + 52 * (1 - alpha));
                 var green = (byte)Math.Round(pixel.G * alpha + 48 * (1 - alpha));
                 var blue = (byte)Math.Round(pixel.B * alpha + 58 * (1 - alpha));
-                await WriteTextAtomicallyAsync(
-                    colorPath,
-                    $"#{red:X2}{green:X2}{blue:X2}",
-                    cancellationToken);
+                averageColor = $"#{red:X2}{green:X2}{blue:X2}";
+                await WriteTextAtomicallyAsync(colorPath, averageColor, cancellationToken);
             }
+
+            var pixelWidth = identified.Width;
+            var pixelHeight = identified.Height;
+            if ((image.Width > image.Height) != (identified.Width > identified.Height))
+            {
+                (pixelWidth, pixelHeight) = (pixelHeight, pixelWidth);
+            }
+
+            await UpdateMetadataAsync(
+                asset,
+                averageColor,
+                pixelWidth,
+                pixelHeight,
+                cancellationToken);
 
             var temporaryPath = destinationPath + $".{Guid.NewGuid():N}.tmp";
 
@@ -229,6 +274,80 @@ public sealed class CachedAssetVisualService : IAssetVisualService
         return Path.Combine(_cachePath, $"{asset.Id:N}-{version}-{kind}.{extension}");
     }
 
+    private async Task UpdateMetadataFromPreviewAsync(AssetFile asset, string previewPath)
+    {
+        try
+        {
+            var identified = await SharpImage.IdentifyAsync(previewPath, CancellationToken.None);
+            var colorPath = GetCacheFilePath(asset, "color", "txt");
+            var averageColor = File.Exists(colorPath)
+                ? await File.ReadAllTextAsync(colorPath, CancellationToken.None)
+                : FallbackColor;
+            await UpdateMetadataAsync(
+                asset,
+                averageColor,
+                identified.Width,
+                identified.Height,
+                CancellationToken.None);
+        }
+        catch (Exception exception) when (
+            exception is UnknownImageFormatException or
+                InvalidImageContentException or
+                NotSupportedException or
+                IOException)
+        {
+            // Cached previews are disposable. A failed metadata upgrade should
+            // not prevent the otherwise valid preview from being returned.
+        }
+    }
+
+    private async Task UpdateMetadataAsync(
+        AssetFile asset,
+        string averageColor,
+        int pixelWidth,
+        int pixelHeight,
+        CancellationToken cancellationToken)
+    {
+        var metadataPath = GetCacheFilePath(asset, "metadata", "json");
+        await _metadataGate.WaitAsync(cancellationToken);
+        try
+        {
+            CachedVisualMetadata? existing = null;
+            if (File.Exists(metadataPath))
+            {
+                try
+                {
+                    existing = JsonSerializer.Deserialize<CachedVisualMetadata>(
+                        await File.ReadAllTextAsync(metadataPath, CancellationToken.None),
+                        JsonOptions);
+                }
+                catch (Exception exception) when (exception is JsonException or IOException)
+                {
+                    // Replace corrupt derivative metadata below.
+                }
+            }
+
+            if (existing is not null &&
+                (long)existing.PixelWidth * existing.PixelHeight >= (long)pixelWidth * pixelHeight)
+            {
+                averageColor = existing.AverageColor;
+                pixelWidth = existing.PixelWidth;
+                pixelHeight = existing.PixelHeight;
+            }
+
+            await WriteTextAtomicallyAsync(
+                metadataPath,
+                JsonSerializer.Serialize(
+                    new CachedVisualMetadata(averageColor, pixelWidth, pixelHeight),
+                    JsonOptions),
+                cancellationToken);
+        }
+        finally
+        {
+            _metadataGate.Release();
+        }
+    }
+
     private static async Task WriteTextAtomicallyAsync(
         string destinationPath,
         string content,
@@ -252,4 +371,9 @@ public sealed class CachedAssetVisualService : IAssetVisualService
 
     private static bool IsUnsupportedImage(Exception exception) =>
         exception is UnknownImageFormatException or InvalidImageContentException or NotSupportedException;
+
+    private sealed record CachedVisualMetadata(
+        string AverageColor,
+        int PixelWidth,
+        int PixelHeight);
 }

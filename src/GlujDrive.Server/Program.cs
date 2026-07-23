@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.HttpOverrides;
+using System.Net;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -143,6 +145,13 @@ builder.Services.AddRateLimiter(options =>
 });
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+    options.ForwardLimit = 1;
+    options.KnownProxies.Add(IPAddress.Loopback);
+    options.KnownProxies.Add(IPAddress.IPv6Loopback);
+});
 builder.Services.Configure<FormOptions>(options =>
 {
     options.MemoryBufferThreshold = 64 * 1024;
@@ -154,6 +163,11 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 
 var app = builder.Build();
+var applicationVersion = System.Reflection.Assembly
+    .GetExecutingAssembly()
+    .GetName()
+    .Version?
+    .ToString(3) ?? "unknown";
 
 app.Use(async (context, next) =>
 {
@@ -167,6 +181,9 @@ app.Use(async (context, next) =>
         // The client is gone, so there is no response to write and no server error to report.
     }
 });
+
+app.UseForwardedHeaders();
+app.UseMiddleware<NetworkAccessMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
@@ -202,6 +219,7 @@ app.MapGet("/api/health", () => Results.Ok(new
 {
     status = "healthy",
     service = "Gluj Drive Server",
+    version = applicationVersion,
     timestampUtc = DateTimeOffset.UtcNow
 }))
 .WithName("GetHealth");
