@@ -4,7 +4,7 @@ Gluj Drive is a lightweight personal photo server designed to run directly on a 
 
 See [PROJECT_PLAN.md](PROJECT_PLAN.md) for the product scope and delivery plan.
 
-## Prerequisites
+## Development prerequisites
 
 - .NET SDK 10.0.302 or a compatible .NET 10 patch
 - Node.js 24 or newer
@@ -56,7 +56,9 @@ dotnet publish src/GlujDrive.Server -c Release
 
 The React application never accesses Windows files directly. It calls the ASP.NET Core API, whose controllers use the `IAssetStorage` contract from `GlujDrive.Application`. `LocalAssetStorage` in `GlujDrive.Infrastructure` performs the actual filesystem operations.
 
-During development, folder registrations are stored in `src/GlujDrive.Server/data/catalog/folders.json`, and the initial default source folder is `src/GlujDrive.Server/data/photos`. These bootstrap locations are controlled by `Storage:CatalogPath` and `Storage:DefaultFolderPath` in `appsettings.json`.
+During development, folder registrations are stored in `src/GlujDrive.Server/data/catalog/folders.json`, and the initial default source folder is `src/GlujDrive.Server/data/photos`. Development overrides in `appsettings.Development.json` keep this state inside the repository.
+
+Published builds store the catalog, owner account, server settings, authentication keys, previews, downloaded semantic model, and semantic index under `%LOCALAPPDATA%\Gluj Drive\data`. The initial upload folder is `%USERPROFILE%\Pictures\Gluj Drive`. Program files and mutable user state are deliberately separate, so installing an update or uninstalling the executable does not remove the catalog. Existing media registered from other directories remains in those directories.
 
 On the host PC, use the site's **Folders** panel to register additional existing Windows directories, choose a default upload destination, or stop scanning a directory. **Browse...** opens a native Windows folder dialog so paths do not need to be pasted manually. Registered folders are scanned recursively, and the panel displays their derived subfolder hierarchy. The upload selector includes the source root and every existing subfolder, allowing uploads to be written directly into an album. Images remain in their source directories and are not copied into the catalog. Removing a registration never deletes its files.
 
@@ -100,7 +102,7 @@ Gluj Drive is provided **as is** as self-hosted software. It does not include a 
 
 During development, the React/Vite client listens on port `5173` across all IPv4 interfaces (`0.0.0.0`), while the ASP.NET server remains on `http://localhost:5199`. Devices on the same LAN can therefore open `http://HOST-PC-IP:5173` once Windows Firewall permits the Vite/Node process.
 
-Vite is a development tool, not the production server. A published build places the compiled React files in ASP.NET's `wwwroot`, so the backend serves both the site and API in production. If a published build must be reachable directly on the LAN, explicitly configure its listening URL—for example `ASPNETCORE_URLS=http://0.0.0.0:5199`—or place it behind a trusted private reverse proxy. That production exposure is intentionally not enabled by default.
+Vite is a development tool, not the production server. A published build places the compiled React files in ASP.NET's `wwwroot`, so one ASP.NET process serves both the site and API. Published builds listen on TCP port `5199` on all IPv4 interfaces by default. The host opens `http://localhost:5199`; another LAN or Tailscale device opens `http://HOST-PC-IP:5199`. Listening on `0.0.0.0:5199` means one port across the PC's network interfaces, not every port. Gluj Drive's IP access rules and the Windows Firewall rule still determine which clients can connect.
 
 The host-only **Settings** panel provides IP allow and deny lists. Each line accepts one IPv4 address, IPv6 address, or CIDR range. An empty allow list permits every address, while a populated allow list accepts only matching addresses; deny rules always take priority. Direct loopback connections remain available even if a rule is entered incorrectly, preventing the owner from locking themselves out. Rules use the peer address seen directly by the server and apply immediately to the site and API.
 
@@ -122,11 +124,22 @@ The **Settings** panel on the host PC manages IP access rules, session lifetime,
 
 The current preview version is **0.1.0**. Backend assembly versions are defined in `Directory.Build.props`, while the frontend version is recorded in its `package.json`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
-Create a self-contained Windows release build with:
+Windows releases contain two artifacts:
+
+- `GlujDrive-Setup-0.1.0-win-x64.exe` is an Inno Setup installer with a self-contained .NET runtime. The user does not install .NET, Node.js, npm, or FFmpeg.
+- `GlujDrive-Portable-0.1.0-win-x64.zip` is a smaller framework-dependent build. It requires the **ASP.NET Core Runtime 10 x64**, but it does not require Node.js because React is compiled into the archive before release.
+
+Both editions include `Start-GlujDrive.cmd`. Launching it opens a visible terminal, starts the server, waits for the health endpoint, and opens the default browser. Keep the terminal open; press `Ctrl+C` or close it to stop Gluj Drive and release its resources. The installer creates a Start Menu shortcut to this launcher and can optionally create a desktop shortcut.
+
+Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) on the release machine, then build both artifacts and their SHA-256 checksum file:
 
 ```powershell
-dotnet publish src/GlujDrive.Server -c Release -r win-x64 --self-contained true
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File tools/release/build-windows-release.ps1 `
+  -Version 0.1.0
 ```
+
+Output is written to `artifacts/release`. Use `-SkipInstaller` to build and validate only the portable archive when Inno Setup is unavailable. Node.js/npm and the .NET SDK are build-machine dependencies only.
 
 Before publishing a GitHub release, verify the production build on a clean Windows machine, include the required FFmpeg license files and optional semantic-search package licenses, and tag the commit as `v0.1.0`.
 

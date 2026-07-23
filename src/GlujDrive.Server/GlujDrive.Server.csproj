@@ -17,11 +17,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Remove="data\**\*" />
+    <None Remove="data\**\*" />
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
     <Content Include="ai\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="runtime\ffmpeg\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="runtime\ffmpeg\**\*"
+             Exclude="runtime\ffmpeg\**\ffplay.exe;runtime\ffmpeg\**\ffprobe.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <Target Name="PublishFrontend" BeforeTargets="ComputeFilesToPublish">
+  <Target Name="PublishFrontend"
+          BeforeTargets="ComputeFilesToPublish"
+          Condition="'$(SkipFrontendBuild)' != 'true'">
     <Exec WorkingDirectory="$(SpaRoot)" Command="npm ci" />
     <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
 

@@ -34,16 +34,16 @@ if (string.IsNullOrWhiteSpace(storageOptions.DefaultFolderPath))
     throw new InvalidOperationException("Storage:DefaultFolderPath must not be empty.");
 }
 
-var catalogPath = Path.GetFullPath(
+var catalogPath = ResolveConfiguredPath(
     storageOptions.CatalogPath,
     builder.Environment.ContentRootPath);
-var defaultFolderPath = Path.GetFullPath(
+var defaultFolderPath = ResolveConfiguredPath(
     storageOptions.DefaultFolderPath,
     builder.Environment.ContentRootPath);
 var semanticOptions = builder.Configuration
     .GetSection(SemanticSearchOptions.SectionName)
     .Get<SemanticSearchOptions>() ?? new SemanticSearchOptions();
-var semanticDataPath = Path.GetFullPath(
+var semanticDataPath = ResolveConfiguredPath(
     semanticOptions.DataPath,
     builder.Environment.ContentRootPath);
 var serverSettings = new ServerSettingsStore(catalogPath, storageOptions, semanticOptions);
@@ -68,10 +68,10 @@ if (!File.Exists(ffmpegPath))
     // Development machines may already provide FFmpeg through PATH.
     ffmpegPath = "ffmpeg";
 }
-semanticOptions.BundledPackagePath = Path.GetFullPath(
+semanticOptions.BundledPackagePath = ResolveConfiguredPath(
     semanticOptions.BundledPackagePath,
     builder.Environment.ContentRootPath);
-semanticOptions.BundledPackageSha256Path = Path.GetFullPath(
+semanticOptions.BundledPackageSha256Path = ResolveConfiguredPath(
     semanticOptions.BundledPackageSha256Path,
     builder.Environment.ContentRootPath);
 
@@ -197,7 +197,6 @@ if (app.Environment.IsDevelopment())
 
 if (!app.Environment.IsDevelopment())
 {
-    app.UseHttpsRedirection();
     app.UseDefaultFiles();
     app.UseStaticFiles();
 }
@@ -230,3 +229,11 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.Run();
+
+static string ResolveConfiguredPath(string configuredPath, string contentRootPath)
+{
+    var expandedPath = Environment.ExpandEnvironmentVariables(configuredPath);
+    return Path.IsPathRooted(expandedPath)
+        ? Path.GetFullPath(expandedPath)
+        : Path.GetFullPath(expandedPath, contentRootPath);
+}

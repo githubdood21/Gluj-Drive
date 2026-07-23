@@ -16,7 +16,9 @@ Initial self-hosted preview release for Windows.
 
 ### Deployment notes
 
-- The React/Vite development client listens on port `5173` on all IPv4 interfaces; the ASP.NET server remains loopback-only by default.
-- Windows Firewall and network/router access remain the responsibility of the host owner.
+- Published builds serve React and the API from port `5199` on all IPv4 interfaces; development keeps ASP.NET loopback-only behind the LAN-accessible Vite proxy.
+- Mutable catalog and configuration state is stored beneath `%LOCALAPPDATA%\Gluj Drive\data`, separate from installed program files.
+- Windows releases provide a self-contained Inno Setup installer and a framework-dependent portable ZIP with the same visible-console launcher and Ctrl+C shutdown behavior.
+- The installer can add a private-network, local-subnet Windows Firewall rule; router and wider internet access remain the host owner's responsibility.
 - HTTPS or a private VPN such as Tailscale is recommended for remote access.
 - This is preview software supplied as is; back up important media and configuration before upgrading.

@@ -6,7 +6,8 @@ public sealed class SemanticSearchOptions
 
     public bool Enabled { get; set; } = true;
 
-    public string DataPath { get; set; } = "data/catalog/semantic";
+    public string DataPath { get; set; } =
+        "%LOCALAPPDATA%/Gluj Drive/data/catalog/semantic";
 
     public string RuntimeLibraryPath { get; set; } =
         "runtime/win-x64/GlujDrive.Inference.Native.dll";

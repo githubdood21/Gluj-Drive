@@ -6,9 +6,11 @@ public sealed class AssetStorageOptions
     public const long DefaultMaxUploadBytes = 100 * 1024 * 1024;
     public const long DefaultMaxBatchUploadBytes = 500 * 1024 * 1024;
 
-    public string CatalogPath { get; set; } = "data/catalog";
+    public string CatalogPath { get; set; } =
+        "%LOCALAPPDATA%/Gluj Drive/data/catalog";
 
-    public string DefaultFolderPath { get; set; } = "data/photos";
+    public string DefaultFolderPath { get; set; } =
+        "%USERPROFILE%/Pictures/Gluj Drive";
 
     public long MaxUploadBytes { get; set; } = DefaultMaxUploadBytes;
 

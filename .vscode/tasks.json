@@ -93,12 +93,36 @@
     {
       "label": "publish: windows",
       "type": "process",
-      "command": "dotnet",
+      "command": "powershell.exe",
       "args": [
-        "publish",
-        "${workspaceFolder}/src/GlujDrive.Server/GlujDrive.Server.csproj",
-        "--configuration",
-        "Release"
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/release/build-windows-release.ps1",
+        "-Version",
+        "0.1.0"
+      ],
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "publish: windows portable",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/tools/release/build-windows-release.ps1",
+        "-Version",
+        "0.1.0",
+        "-SkipInstaller"
       ],
       "problemMatcher": "$msCompile",
       "presentation": {
